@@ -108,7 +108,7 @@ def set_temperature(modelwtemp, valid_loader):
 
     # Calculate NLL and ECE before temperature scaling
     before_temperature_nll = nll_criterion(logits, labels).item()
-    before_temperature_ece = multiclass_calibration_error(logits, labels, num_classes=10, n_bins=15, norm='l1')
+    before_temperature_ece = multiclass_calibration_error(logits, labels, num_classes=modelwtemp.num_classes, n_bins=15, norm='l1')
     print('Before temperature - NLL: %.3f, ECE: %.3f' % (before_temperature_nll, before_temperature_ece))
 
     # Next: optimize the temperature w.r.t. NLL
@@ -124,7 +124,7 @@ def set_temperature(modelwtemp, valid_loader):
 
     # Calculate NLL and ECE after temperature scaling
     after_temperature_nll = nll_criterion(modelwtemp.temperature_scale(logits), labels).item()
-    after_temperature_ece = multiclass_calibration_error(modelwtemp.temperature_scale(logits), labels, num_classes=10, n_bins=15, norm='l1')
+    after_temperature_ece = multiclass_calibration_error(modelwtemp.temperature_scale(logits), labels, num_classes=modelwtemp.num_classes, n_bins=15, norm='l1')
     print('After temperature - NLL: %.3f, ECE: %.3f' % (after_temperature_nll, after_temperature_ece))
     
     print('Optimal temperature: %.3f' % modelwtemp.temperature.item())

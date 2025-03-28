@@ -3,10 +3,10 @@ from torch import nn, optim
 from torch.nn import functional as F
 from torchvision import datasets
 from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset, TensorDataset, RandomSampler, Sampler
-from sklearn.metrics import DistanceMetric
+from sklearn.metrics import accuracy_score, DistanceMetric
 from sklearn.neighbors import NearestNeighbors, KNeighborsRegressor, BallTree, KDTree, KernelDensity
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.ensemble import RandomForestRegressor
 from temperature_scaling import *
 from tqdm import tqdm
@@ -14,6 +14,7 @@ import torchvision.models as models
 import torch.optim.lr_scheduler as lr_scheduler
 import matplotlib.pyplot as plt
 import inspect
+import random
 import numpy as np
 import pandas as pd
 import os
@@ -24,6 +25,47 @@ import warnings
 import detectors
 import timm
 import pickle
+
+class CustomTensorDataset():
+    """
+    TensorDataset with application of transforms.
+    """
+    def __init__(self, data, targets, transform=None):
+        self.data = data
+        self.targets = targets
+        self.transform = transform
+
+    def __getitem__(self, index):
+        # Handle batch indexing
+        if isinstance(index, (list, np.ndarray, torch.Tensor)):
+            index = np.array(index)
+            x = self.data[index]
+            y = self.targets[index]
+            # Apply transformations batch-wise
+            if self.transform:
+                x = torch.stack([self.transform(sample) for sample in x])
+            return x, y
+
+        # Handle single indexing
+        x = self.data[index]
+        y = self.targets[index]
+        # Ensure image has a channel dimension
+        if len(x.shape) == 2:
+            x = x.unsqueeze(0)  # Reshape to (1, H, W)
+        # set seeds
+        random.seed(33)
+        torch.manual_seed(33)
+        if self.transform:
+            x = self.transform(x)
+        return x, y
+
+    def __len__(self):
+        if isinstance(self.data, np.ndarray):
+            return self.data.shape[0]  # Use .shape for NumPy arrays
+        elif isinstance(self.data, torch.Tensor):
+            return self.data.size(0)  # Use .size(0) for PyTorch tensors
+        else:
+            raise TypeError("Unsupported data type for 'data'. Must be np.ndarray or torch.Tensor.")
 
 class ConvSAE(nn.Module):
     def __init__(self, latent_dim=2, num_classes=10, channels=1, width=28):
@@ -235,6 +277,63 @@ class RegressorSAE(nn.Module):
         logit = self.regressor(encoded)
         return encoded, decoded, logit
 
+
+class FcSAE(nn.Module):
+    """
+    Creates an autoencoder with a regressor component.
+    """
+
+    def __init__(self, latent_dim=2, in_features=None, num_classes=4):
+        super(FcSAE, self).__init__()
+        self.in_features = in_features
+        self.num_classes = num_classes
+        self.latent_dim = latent_dim
+        self.type = 'fcsae'
+
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(in_features, 64),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(64, 32),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(32, 16),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(16, latent_dim)
+        )
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 16),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(16, 32),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(32, 64),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(64, in_features)
+        )
+        # NN classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(self.latent_dim, 32),
+            nn.LeakyReLU(),
+            nn.Linear(32, 16),
+            nn.LeakyReLU(),
+            nn.Linear(16, 8),
+            nn.LeakyReLU(),
+            nn.Linear(8, num_classes)
+        )
+
+    def forward(self, x):
+        x = x.view(-1, self.in_features)
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        logit = self.classifier(encoded)
+        return encoded, decoded, logit
+
 class Torch_ResNet(nn.Module):
     """
     adapted from:
@@ -435,7 +534,7 @@ def train_sae_sequential(model, train_data, epochs=10):
     train_loader = DataLoader(train_data, batch_size=batches, shuffle=True)
     history = dict()
     start_time = time.time()
-    
+
     print(f'Training {model.latent_dim}D model')
     print('\tTraining Encoder and Classifier (Classification + Contrastive Loss)')
     history1 = []
@@ -527,75 +626,6 @@ def train_sae_sequential(model, train_data, epochs=10):
 
     return model, history
 
-def train_sae(model, train_data, epochs=10, use_center=False):
-    '''
-    '''
-    batches = 64
-    center_fn = CenterLoss(model.latent_dim)
-    task_fn = nn.CrossEntropyLoss()
-    decoder_fn = nn.MSELoss()
-    train_loader = DataLoader(train_data, batch_size=batches, shuffle=True)
-    history = []
-    start_time = time.time()
-    
-    print(f'Training {model.latent_dim}D model')
-    print('\tTraining Encoder, Decoder and Classifier')
-    history = []
-    # init optimizer
-    optimizer = optim.Adam(model.parameters(), lr=3e-4)
-    for epoch in range(epochs):
-        model.train()
-        # make epoch stat counters
-        total_loss = 0
-        total_taskloss = 0
-        total_centerloss = 0
-        total_reconloss = 0
-        for data, labels in train_loader:
-            encoded, decoded, logits = model(data)
-            task_loss = task_fn(logits, labels)
-            recon_loss = decoder_fn(decoded, data)
-            if use_center:
-                center_loss = center_fn(encoded, labels)
-                center_loss *= 0.1 # downweight center loss contribution to gradient
-                loss = center_loss + task_loss + recon_loss
-            else:
-                loss = task_loss + recon_loss
-            # backprop
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if use_center:
-                # Update class centers after the batch
-                center_fn.update_centers(encoded.detach(), labels)
-                total_centerloss += center_loss.item()
-            # update total loss counters
-            total_loss += loss.item()
-            total_taskloss += task_loss.item()
-            total_reconloss += recon_loss.item()
-        
-        # average total loss across epoch batches
-        total_loss /= len(train_loader)
-        total_taskloss /= len(train_loader)
-        total_reconloss /= len(train_loader)
-
-        if use_center:
-            total_centerloss /= len(train_loader)
-            # print epoch results
-            print(f"\tEpoch {epoch+1}/{epochs}")
-            print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, center loss: {total_centerloss}, recon loss: {total_reconloss}")
-        else:
-            # print epoch results
-            print(f"\tEpoch {epoch+1}/{epochs}")
-            print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, recon loss: {total_reconloss}")
-        
-        history.append(round(float(total_loss), 4))
-    
-    end_time = time.time()
-    total_time = (end_time - start_time)/60
-    print("Total train time: ", total_time, " mins")
-
-    return model, history
-
 def train_sae_regressor(model, train_data, epochs=50):
     '''
     '''
@@ -605,7 +635,7 @@ def train_sae_regressor(model, train_data, epochs=50):
     train_loader = DataLoader(train_data, batch_size=batches, shuffle=True)
     history = []
     start_time = time.time()
-    
+
     print(f'Training {model.latent_dim}D model')
     print('\tTraining Encoder, Decoder and Regressor')
     history = []
@@ -631,7 +661,57 @@ def train_sae_regressor(model, train_data, epochs=50):
             total_loss += loss.item()
             total_taskloss += task_loss.item()
             total_reconloss += recon_loss.item()
+
+        # average total loss across epoch batches
+        total_loss /= len(train_loader)
+        total_taskloss /= len(train_loader)
+        total_reconloss /= len(train_loader)
+
+        # print epoch results
+        print(f"\tEpoch {epoch+1}/{epochs}")
+        print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, recon loss: {total_reconloss}")
         
+        history.append(round(float(total_loss), 4))
+    
+    end_time = time.time()
+    total_time = (end_time - start_time)/60
+    print("Total train time: ", total_time, " mins")
+
+    return model, history
+
+def train_sae(model, train_data, epochs=10):
+    '''
+    '''
+    # init variables
+    task_fn = nn.CrossEntropyLoss()
+    decoder_fn = nn.MSELoss()
+    train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+    optimizer = optim.Adam(model.parameters(), lr=3e-4)
+    start_time = time.time()
+    # begin training
+    print(f'Training {model.latent_dim}D model')
+    print('\tTraining Encoder, Decoder and Classifier')
+    history = []
+    for epoch in range(epochs):
+        model.train()
+        # make epoch stat counters
+        total_loss = 0
+        total_taskloss = 0
+        total_reconloss = 0
+        for data, labels in train_loader:
+            encoded, decoded, logits = model(data)
+            task_loss = task_fn(logits, labels)
+            recon_loss = decoder_fn(decoded, data) * 100.0  # upweight reconstruction loss
+            loss = task_loss + recon_loss
+            # backprop
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            # update total loss counters
+            total_loss += loss.item()
+            total_taskloss += task_loss.item()
+            total_reconloss += recon_loss.item()
+
         # average total loss across epoch batches
         total_loss /= len(train_loader)
         total_taskloss /= len(train_loader)

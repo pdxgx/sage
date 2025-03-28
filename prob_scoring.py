@@ -24,12 +24,12 @@ def get_embedding(model, data_dict, dim, softmax=False):
         data_loader = DataLoader(data, batch_size=64, shuffle=False)
         latent_space, rloss, task  = [], [], []
         with torch.no_grad():
-            for imgs, lbls in data_loader:
-                encoded, decoded, logits = model(imgs)
+            for dat, lbls in data_loader:
+                encoded, decoded, logits = model(dat)
                 latent_space.append(encoded)
                 # get reconstruction error
-                for dec, im in zip(decoded, imgs):
-                    r_loss = rloss_fxn(dec, im)
+                for dec, d in zip(decoded, dat):
+                    r_loss = rloss_fxn(dec, d)
                     rloss.append(r_loss)
                 if softmax == True:
                     logits = sm(logits) # get softmax confidence scores when no calibration
@@ -51,11 +51,11 @@ def get_embedding(model, data_dict, dim, softmax=False):
     # make pandas df from SAE outputs
     print('Making dataframe')
     latent_cols = ['latent'+str(i) for i in range(1, dim+1)] 
-    conf_cols = ['conf'+str(i) for i in range(10)]
+    conf_cols = ['conf'+str(i) for i in range(model.num_classes)]
     col_names = ['data', 'labels'] + latent_cols + ['rloss'] + conf_cols
     latent_df = pd.DataFrame(columns=col_names)
     # add confidence scores to df
-    for i in range(10):
+    for i in range(model.num_classes):
         conf = np.concatenate([j[:,i] for j in task_list], axis=None)
         latent_df[f'conf{i}'] = conf
     # add latent embeddings to df
@@ -87,12 +87,12 @@ def get_regression_embedding(model, data_dict, dim):
         data_loader = DataLoader(data, batch_size=64, shuffle=False)
         latent_space, rloss, task  = [], [], []
         with torch.no_grad():
-            for imgs, lbls in data_loader:
-                encoded, decoded, logits = model(imgs)
+            for dat, lbls in data_loader:
+                encoded, decoded, logits = model(dat)
                 latent_space.append(encoded)
                 # get reconstruction error
-                for dec, im in zip(decoded, imgs):
-                    r_loss = rloss_fxn(dec, im)
+                for dec, d in zip(decoded, dat):
+                    r_loss = rloss_fxn(dec, d)
                     rloss.append(r_loss)
                 # get regression error
                 logits = logits.view(lbls.size(0))
@@ -134,23 +134,23 @@ def get_regression_embedding(model, data_dict, dim):
     
     return latent_df
 
-def get_max_conf(latent_df):
-    conf_cols = ['conf'+str(i) for i in range(10)]
+def get_max_conf(latent_df, n_classes):
+    conf_cols = ['conf'+str(i) for i in range(n_classes)]
     task_data = latent_df[conf_cols]
     latent_df['task'] = task_data.max(axis=1) # maximum confidence value for rows
     return latent_df
 
-def get_latent_distance(latent_df, data_dict, dim, k=100, metric='manhattan'):
+def get_latent_distance(latent_df, data_dict, dim, k=100, reference='train', metric='manhattan'):
     dist_arr = []
     latent_cols = ['latent'+str(i) for i in range(1, dim+1)]
     # get training latent space
-    train_latent = latent_df.loc[latent_df['data'] == 'train'][latent_cols].to_numpy()
+    train_latent = latent_df.loc[latent_df['data'] == reference][latent_cols].to_numpy()
     # fit BallTree to train latent space, use L1 distance metric as default
     tree = BallTree(train_latent, metric=metric)
     for name in data_dict.keys():
         name_latent = latent_df.loc[latent_df['data'] == name][latent_cols].to_numpy()
         # query tree
-        if name == 'train':
+        if name == reference:
             distances, indices = tree.query(name_latent, k=k+1)
             # removes columns where train points return themselves (used to fit tree)
             distances = np.delete(distances, 0, 1)
