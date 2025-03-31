@@ -11,246 +11,97 @@ from sklearn.preprocessing import LabelBinarizer
 from sklearn.inspection import permutation_importance
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 import scipy.stats as stats
 from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 import seaborn as sns
-from data_setup import DataBuilder
 
-def examples_grid_mnist(builder, datasets, save=False, save_path=None):
-    # Plot transforms in grid
-    train_data = datasets['train'].data
-    train_labels = datasets['train'].targets
-    for i in range(10):
-        for idx, lbl in enumerate(train_labels):
-            if int(lbl) == i:
-                image = train_data[idx].unsqueeze(0) # reshapes image to (C, H, W)
-                fig, axs = plt.subplots(3,3, squeeze=True)
-                fig.tight_layout()
-                axs[0, 0].imshow(builder.transform(image).reshape(28,28), cmap="gray")
-                axs[0, 0].set(title='Reference')
-                axs[0, 1].imshow(builder.invert_transform(image).reshape(28,28), cmap="gray")
-                axs[0, 1].set(title='Pixel Inversion')
-                axs[0, 2].imshow(builder.vert_transform(image).reshape(28,28), cmap="gray")
-                axs[0, 2].set(title='Vertical Flip')
-                axs[1, 0].imshow(builder.horiz_transform(image).reshape(28,28), cmap="gray")
-                axs[1, 0].set(title='Horiztonal Flip')
-                axs[1, 1].imshow(builder.blur_transform(image).reshape(28,28), cmap="gray")
-                axs[1, 1].set(title='Image Blur')
-                axs[1, 2].imshow(builder.elastic50_transform(image).reshape(28,28), cmap="gray")
-                axs[1, 2].set(title='Elastic Low')
-                axs[2, 0].imshow(builder.elastic200_transform(image).reshape(28,28), cmap="gray")
-                axs[2, 0].set(title='Elastic High')
-                axs[2, 1].imshow(builder.noise20_transform(image).reshape(28,28), cmap="gray")
-                axs[2, 1].set(title='Noise Low')
-                axs[2, 2].imshow(builder.noise80_transform(image).reshape(28,28), cmap="gray")
-                axs[2, 2].set(title='Noise High')
-                # remove the x and y ticks
-                plt.setp(axs, xticks=[], yticks=[])
-                if save == True:
-                    join_path = os.path.join(save_path, f'transform_examples_{i}.png')
-                    plt.savefig(join_path, format='png', dpi=150, bbox_inches='tight')
-                plt.close()
-                break
-            else:
-                continue
-
-def denormalize_image(image, mean, std):
-    """
-    Denormalizes an image by reversing the normalization using the provided mean and std.
-    Assumes image is in the shape (C, H, W) and in range [-1, 1].
-    """
-    for c in range(3):  # for each channel (RGB)
-        image[c] = image[c] * std[c] + mean[c]  # Apply inverse normalization
-    return image
-    
-def examples_grid_cifar(builder, datasets, save=False, save_path=None):
-    cifar_mean = [0.4914, 0.4822, 0.4465]
-    cifar_std = [0.247, 0.243, 0.261]
-    # Plot transforms in grid
-    train_data = datasets['train'].data
-    train_labels = datasets['train'].targets
-    for i in range(10):
-        for idx, lbl in enumerate(train_labels):
-            if int(lbl) == i:
-                image = train_data[idx]
-                # Ensure image is a PyTorch tensor of shape (C, H, W)
-                image = torch.tensor(image).permute(2, 0, 1).float() / 255.0  # Normalize to [0, 1]
-                
-                fig, axs = plt.subplots(3, 4, squeeze=False, figsize=(10, 8))
-                fig.subplots_adjust(hspace=0.2, wspace=0.2)
-                #fig.tight_layout()
-
-                # Apply the transform, permute, and denormalize
-                img_ref = builder.transform(image)
-                img_ref = denormalize_image(img_ref.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[0, 0].imshow(img_ref.permute(1, 2, 0).numpy())
-                axs[0, 0].set(title='Reference')
-
-                img_invert = builder.invert_transform(image)
-                img_invert = denormalize_image(img_invert.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[0, 1].imshow(img_invert.permute(1, 2, 0).numpy())
-                axs[0, 1].set(title='Pixel Inversion')
-
-                img_vert = builder.vert_transform(image)
-                img_vert = denormalize_image(img_vert.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[0, 2].imshow(img_vert.permute(1, 2, 0).numpy())
-                axs[0, 2].set(title='Vertical Flip')
-
-                img_horiz = builder.horiz_transform(image)
-                img_horiz = denormalize_image(img_horiz.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[0, 3].imshow(img_horiz.permute(1, 2, 0).numpy())
-                axs[0, 3].set(title='Horizontal Flip')
-
-                img_blur = builder.blur_transform(image)
-                img_blur = denormalize_image(img_blur.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[1, 0].imshow(img_blur.permute(1, 2, 0).numpy())
-                axs[1, 0].set(title='Image Blur')
-
-                img_elastic50 = builder.elastic50_transform(image)
-                img_elastic50 = denormalize_image(img_elastic50.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[1, 1].imshow(img_elastic50.permute(1, 2, 0).numpy())
-                axs[1, 1].set(title='Elastic Low')
-
-                img_elastic200 = builder.elastic200_transform(image)
-                img_elastic200 = denormalize_image(img_elastic200.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[1, 2].imshow(img_elastic200.permute(1, 2, 0).numpy())
-                axs[1, 2].set(title='Elastic High')
-
-                img_noise20 = builder.noise20_transform(image)
-                img_noise20 = denormalize_image(img_noise20.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[1, 3].imshow(img_noise20.permute(1, 2, 0).numpy())
-                axs[1, 3].set(title='Noise Low')
-
-                img_noise80 = builder.noise80_transform(image)
-                img_noise80 = denormalize_image(img_noise80.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[2, 0].imshow(img_noise80.permute(1, 2, 0).numpy())
-                axs[2, 0].set(title='Noise High')
-
-                img_posterize = builder.posterize_transform(image)
-                img_posterize = denormalize_image(img_posterize.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[2, 1].imshow(img_posterize.permute(1, 2, 0).numpy())
-                axs[2, 1].set(title='Posterize')
-
-                img_solarize = builder.solarize_transform(image)
-                img_solarize = denormalize_image(img_solarize.clone(), cifar_mean, cifar_std).clamp(0, 1)
-                axs[2, 2].imshow(img_solarize.permute(1, 2, 0).numpy())
-                axs[2, 2].set(title='Solarize')
-
-                axs[2, 3].axis('off')
-                
-                # remove the x and y ticks
-                plt.setp(axs, xticks=[], yticks=[])
-                if save == True:
-                    join_path = os.path.join(save_path, f'transform_examples_{i}.png')
-                    plt.savefig(join_path, format='png', dpi=150, bbox_inches='tight')
-                plt.close()
-                break
-            else:
-                continue
-
-def original_vs_reconstruction_mnist(model, datasets, recon_loss=False, save=False, save_path=None):
-    # init reconstruction loss function
-    rloss_fxn = torch.nn.MSELoss()
-    # show training original image vs. reconstruction
-    test_data = datasets['test'].data
-    test_labels = datasets['test'].targets
-    builder = DataBuilder()
-    model.eval()
-    for i in range(10):
-        for idx, lbl in enumerate(test_labels):
-            if int(lbl) == i:
-                # get original img and plot
-                img = builder.transform(test_data[idx])
-                fig, ax = plt.subplots(figsize=(2,2))
-                ax.imshow(img.view(28, 28), cmap='gray')
-                # remove the x and y ticks
-                plt.setp(ax, xticks=[], yticks=[])
-                if save == True:
-                    join_path_orig = os.path.join(save_path, f'original_{i}.png')
-                    plt.savefig(join_path_orig, format='png', dpi=150, bbox_inches='tight')
-                plt.close()
-                
-                # get reconstructed img and loss
-                img = img.to(torch.float32)
-                with torch.no_grad():
-                    img = img.unsqueeze(0) # adds channel to img
-                    _, recon, _ = model(img)
-                if recon_loss:
-                    r_loss = rloss_fxn(recon, img)
-                    r_loss = round(float(r_loss), 3)
-                # plot reconstruction
-                fig, ax = plt.subplots(figsize=(2,2))
-                ax.imshow(recon.view(28, 28), cmap='gray')
-                if recon_loss:
-                    ax.set_title(f'Loss = {r_loss}', fontsize=18, pad=10)
-                # remove the x and y ticks
-                plt.setp(ax, xticks=[], yticks=[])
-                if save == True:
-                    join_path_recon = os.path.join(save_path, f'reconstructed_{i}.png')
-                    plt.savefig(join_path_recon, format='png', dpi=150, bbox_inches='tight')
-                plt.close()
-                break
-            else:
-                continue
-
-def confusion_matrix_from_df(df, save=False, save_path=None):
-    labels = df.loc[df['data'] == 'test']['labels'].to_numpy()
-    sub_df = df.loc[df['data'] == 'test'][['conf'+str(i) for i in range(10)]].to_numpy()
+def confusion_matrix_from_df(df, reference, save=False, save_path=None):
+    labels = df.loc[df['data'] == reference]['labels'].to_numpy()
+    n_labs = len(np.unique(labels))
+    sub_df = df.loc[df['data'] == reference][['conf'+str(i) for i in range(n_labs)]].to_numpy()
     preds = sub_df.argmax(axis=1)
     f1 = f1_score(labels, preds, average='micro')
+    f1 = round(f1, 4)
     # make confusion matrix and save
     conf_mat = ConfusionMatrixDisplay.from_predictions(preds, labels)
     conf_mat.ax_.set_title(f'F1 Score = {f1}', pad=10, fontsize=14)
     if save == True:
-        joined_path = os.path.join(save_path, f'test_confusionmatrix.png')
+        joined_path = os.path.join(save_path, f'{reference}_confusionmatrix.png')
         plt.savefig(joined_path, format='png', dpi=150, bbox_inches='tight')
+    plt.show()
     plt.close()
 
-def overlapped_latent_plot(latent_df, save=False, save_path=None):
-    # get latent embeddings for train and test sets
-    train_1 = latent_df.loc[latent_df['data'] == 'train'][['latent1']]
-    train_2 = latent_df.loc[latent_df['data'] == 'train'][['latent2']]
-    test_1 = latent_df.loc[latent_df['data'] == 'test'][['latent1']]
-    test_2 = latent_df.loc[latent_df['data'] == 'test'][['latent2']]
-    # get train and test labels
-    train_labels = latent_df.loc[latent_df['data'] == 'train'].labels
-    test_labels = latent_df.loc[latent_df['data'] == 'test'].labels
-    # init figure
+
+def overlapped_latent_plot(latent_df, reference, test, save=False, save_path=None):
+    label_dict = {
+        0: 'LumA',
+        1: 'LumB',
+        2: 'Basal',
+        3: 'Her2',
+        4: 'Normal',
+        5: 'Claudin'
+    }
+
+    # Get latent embeddings for train and test sets
+    ref_1 = latent_df.loc[latent_df['data'] == reference][['latent1']]
+    ref_2 = latent_df.loc[latent_df['data'] == reference][['latent2']]
+    test_1 = latent_df.loc[latent_df['data'] == test][['latent1']]
+    test_2 = latent_df.loc[latent_df['data'] == test][['latent2']]
+
+    # Get train and test labels
+    ref_labels = latent_df.loc[latent_df['data'] == reference].labels
+    test_labels = latent_df.loc[latent_df['data'] == test].labels
+
+    # Create figure
     fig, ax = plt.subplots(figsize=(8, 6))
-    # plot train data
-    colors1 = ListedColormap(plt.get_cmap('tab20').colors[1::2])
-    scatter1 = ax.scatter(train_1, train_2, s=5, c=train_labels, cmap=colors1, alpha=0.75)
-    # plot test data
-    colors2 = ListedColormap(plt.get_cmap('tab20').colors[::2])
-    scatter2 = ax.scatter(test_1, test_2, s=5, c=test_labels, cmap=colors2)
-    # make train and test legends
-    legend_handles = []
-    legend_labels = []
-    # train
-    for i, color in enumerate(colors1.colors):
-        legend_handles.append(
-            Line2D(
-                [0], [0], 
-                linestyle='None', marker='o', markersize=10, color='w', markerfacecolor=color, label=str(i)
-            )
-        )
-        legend_labels.append(str(''))
-    # test
-    for i, color in enumerate(colors2.colors):
-        legend_handles.append(
-            Line2D(
-                [0], [0], 
-                linestyle='None', marker='o', markersize=10, color='w', markerfacecolor=color, label=str(i)
-            )
-        )
-        legend_labels.append(str(i))
-    ax.legend(handles=legend_handles, labels=legend_labels, ncol=2, columnspacing=0.25, title='Train  Test')
-    plt.xlabel('Latent Dimension 1')
-    plt.ylabel('Latent Dimension 2')
-    if save == True:
+
+    # Define colormap for reference and test datasets
+    colors1 = ListedColormap(plt.get_cmap('tab20').colors[1::2])  # Odd-indexed colors
+    colors2 = ListedColormap(plt.get_cmap('tab20').colors[::2])  # Even-indexed colors
+
+    # Plot reference data
+    scatter1 = ax.scatter(ref_1, ref_2, s=15, c=ref_labels, cmap=colors1, alpha=0.75, label=reference)
+
+    # Plot test data
+    scatter2 = ax.scatter(test_1, test_2, s=15, c=test_labels, cmap=colors2, label=test)
+
+    # Generate legend from scatterplot objects
+    # Get the labels from the colormap for both reference and test datasets
+    ref_labels_legend = [label_dict[i] for i in np.unique(ref_labels)]
+    test_labels_legend = [label_dict[i] for i in np.unique(test_labels)]
+
+    # Create handles for reference and test using the scatter's mappable
+    ref_handles = scatter1.legend_elements()[0]  # Get handles for reference
+    test_handles = scatter2.legend_elements()[0]  # Get handles for test
+
+    # Combine the handles and labels for the legend
+    handles = ref_handles + test_handles
+    labels = ref_labels_legend + test_labels_legend
+
+    # Add legend to the plot
+    ax.legend(
+        handles=handles,
+        labels=labels,
+        title=f"{reference.upper()}       {test.upper()}",
+        loc="best",
+        ncol=2,  # Two columns
+        title_fontsize=12,
+        fontsize=11
+    )
+
+    # Set axis labels
+    ax.set_xlabel('Latent Dimension 1', fontsize=12)
+    ax.set_ylabel('Latent Dimension 2', fontsize=12)
+
+    # Save plot if needed
+    if save:
         joined_path = os.path.join(save_path, f'overlapped_latent_plot.png')
         plt.savefig(joined_path, format='png', dpi=300)
+
+    # Show plot
+    plt.show()
     plt.close()
 
 def trainonly_latent_plot(latent_df, labels_dict, save=False, save_path=None):
