@@ -27,7 +27,7 @@ aurora['Labels'] = aurora['Labels'].replace(label_dict_tcga).copy()
 
 ## get feature names
 # only ['skgrid', 'aklimate', 'subscope'] models have GEXP features shared across TCGA, AURORA and METABRIC
-with open('./tools/model_info.json', 'r') as fh:
+with open('./models/model_info.json', 'r') as fh:
     data = json.load(fh)
     if args.featureset == 'all':
         ft_list = []

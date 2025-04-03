@@ -22,7 +22,7 @@ def confusion_matrix_from_df(df, reference, save=False, save_path=None):
     n_labs = len(np.unique(labels))
     sub_df = df.loc[df['data'] == reference][['conf'+str(i) for i in range(n_labs)]].to_numpy()
     preds = sub_df.argmax(axis=1)
-    f1 = f1_score(labels, preds, average='micro')
+    f1 = f1_score(labels, preds, average='weighted')
     f1 = round(f1, 4)
     # make confusion matrix and save
     conf_mat = ConfusionMatrixDisplay.from_predictions(preds, labels)
@@ -97,8 +97,7 @@ def overlapped_latent_plot(latent_df, reference, test, save=False, save_path=Non
 
     # Save plot if needed
     if save:
-        joined_path = os.path.join(save_path, f'overlapped_latent_plot.png')
-        plt.savefig(joined_path, format='png', dpi=300)
+        plt.savefig(save_path, format='png', dpi=300)
 
     # Show plot
     plt.show()

@@ -1,0 +1,6 @@
+pandas
+pyyaml
+synapseclient
+cwlref-runner==1.0
+cwltool
+boto3
