@@ -79,4 +79,4 @@ aur_slim = aurora[['BRCA'] + gexp_cols]
 # combine dataframes from each dataset
 combined_slim = pd.concat([tcga_slim, met_slim, aur_slim])
 combined_slim = combined_slim.rename(columns={'BRCA':''}) # blank column for samples
-combined_slim.to_csv('gdan-tmp-models/user-transformed-data/TCGA_METABRIC_AURORA_BRCA_slim.tsv')
+combined_slim.to_csv('gdan-tmp-models/user-transformed-data/TCGA_METABRIC_AURORA_BRCA_tmp.tsv')

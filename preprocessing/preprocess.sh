@@ -1,7 +1,5 @@
-# run shell script as "bash preprocessing/preprocess.sh {sage_directory_path}" from sage_directory
-
+# run script as "bash scripts/preprocess.sh {sage_directory_path}" from sage_directory
 filepath=${1} # path to cloned sage repository
-
 cd ${filepath}/gdan-tmp-models/tools
 # download source matrix
 curl --remote-name --remote-header-name \
@@ -34,18 +32,7 @@ cd ${filepath}/models
 # download model info json
 curl --remote-name --remote-header-name \
 'https://api.gdc.cancer.gov/data/94a477f5-947b-4412-86b0-591aec7d6191'
-
 cd ${filepath}
 bash preprocessing/download_metabric.sh ${filepath}
 bash preprocessing/download_aurora.sh ${filepath}
 python preprocessing/format_matrices.py
-
-#bash RUN_MODEL.sh BRCA GEXP aklimate user-transformed-data/TCGA_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP subscope user-transformed-data/TCGA_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP skgrid user-transformed-data/TCGA_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP aklimate user-transformed-data/METABRIC_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP subscope user-transformed-data/METABRIC_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP skgrid user-transformed-data/METABRIC_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP aklimate user-transformed-data/AURORA_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP subscope user-transformed-data/AURORA_BRCA_slim.tsv | \
-#bash RUN_MODEL.sh BRCA GEXP skgrid user-transformed-data/AURORA_BRCA_slim.tsv
