@@ -43,6 +43,46 @@ class ModelWithTemperature(nn.Module):
         temperature = self.temperature.unsqueeze(1).expand(logits.size(0), logits.size(1))
         return logits / temperature
 
+class MiddleModelWithTemperature(nn.Module):
+    """
+    code from https://github.com/gpleiss/temperature_scaling with modifications
+    
+    A thin decorator, which wraps a model with temperature scaling
+    model (nn.Module):
+        A classification neural network
+        NB: Output of the neural network should be the classification logits,
+            NOT the softmax (or log softmax)!
+    """
+    def __init__(self, model):
+        super(MiddleModelWithTemperature, self).__init__()
+        self.model = model
+        self.temperature = nn.Parameter(torch.ones(1))
+        self.num_classes = model.num_classes
+
+    def forward(self, input):
+        input = self.model.encoder(input)
+        embedded = self.model.embedding(input)
+        decoded = self.model.decoder(input)
+        logits = self.model.classifier(input)
+        probs = F.softmax(self.temperature_scale(logits), dim=1)
+        return embedded, decoded, probs
+
+    def forward_logits(self, input):
+        input = self.model.encoder(input)
+        embedded = self.model.embedding(input)
+        decoded = self.model.decoder(input)
+        logits = self.model.classifier(input)
+        logits = self.temperature_scale(logits)
+        return embedded, decoded, logits
+
+    def temperature_scale(self, logits):
+        """
+        Perform temperature scaling on logits
+        """
+        # Expand temperature to match the size of logits
+        temperature = self.temperature.unsqueeze(1).expand(logits.size(0), logits.size(1))
+        return logits / temperature
+
 class PooledModelWithTemperature(nn.Module):
     """
     A thin decorator, which wraps a model with temperature scaling

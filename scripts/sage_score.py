@@ -67,26 +67,32 @@ data_dict['aurora'] = aurora_data
 ## Get SAGE output values
 # load trained & calibrated model
 model_path = f'./models/{args.featureset}_sage_calib'
-base_model = FcSAE(in_features=len(ft_set), latent_dim=2)
+# load best model parameters
+#params_file = f'./models/{args.featureset}_train_history.pickle'
+#with open(params_file, 'rb') as pf: 
+    #model_params = pickle.load(pf)
+#dims = model_params[min(list(model_params.keys()))]['latent_dim']
+dims = 10
+base_model = FcSAE(in_features=len(ft_set), latent_dim=dims)
 calib_model = ModelWithTemperature(base_model)
 calib_model.load_state_dict(torch.load(model_path)) # load model from save point
 # run SAGE
-latent_df = get_embedding(calib_model, data_dict, base_model.latent_dim)
+latent_df = get_embedding(calib_model, data_dict, dims)
 # get classifier confidence
 latent_df = get_max_conf(latent_df, 4)
 # get kNN distances to TCGA reference points
 latent_df = get_latent_distance(
     latent_df,
     data_dict,
-    base_model.latent_dim,
-    k=25,
+    dims,
+    k=20,
     reference='tcga',
-    metric='euclidean'
+    metric='manhattan'
 )
 # calculate probabilities and combined score
 probs_df = rank_measures_get_probs(
     latent_df,
-    [base_model.latent_dim],
+    [dims],
     data_dict.keys(),
     reference='tcga'
 )

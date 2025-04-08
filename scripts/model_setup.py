@@ -5,8 +5,8 @@ from torchvision import datasets
 from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset, TensorDataset, RandomSampler, Sampler
 from sklearn.metrics import accuracy_score, DistanceMetric
 from sklearn.neighbors import NearestNeighbors, KNeighborsRegressor, BallTree, KDTree, KernelDensity
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import train_test_split, GridSearchCV, ParameterGrid
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.ensemble import RandomForestRegressor
 from temperature_scaling import *
 from tqdm import tqdm
@@ -294,26 +294,26 @@ class FcSAE(nn.Module):
         self.encoder = nn.Sequential(
             nn.Linear(in_features, 64),
             nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
+            #nn.Dropout(p=0.2),
             nn.Linear(64, 32),
             nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
+            #nn.Dropout(p=0.2),
             nn.Linear(32, 16),
             nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(16, latent_dim)
+            #nn.Dropout(p=0.2),
+            nn.Linear(16, self.latent_dim)
         )
         # Decoder
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 16),
+            nn.Linear(self.latent_dim, 16),
             nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
+            #nn.Dropout(p=0.2),
             nn.Linear(16, 32),
             nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
+            #nn.Dropout(p=0.2),
             nn.Linear(32, 64),
             nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
+            #nn.Dropout(p=0.2),
             nn.Linear(64, in_features)
         )
         # NN classifier
@@ -333,6 +333,79 @@ class FcSAE(nn.Module):
         decoded = self.decoder(encoded)
         logit = self.classifier(encoded)
         return encoded, decoded, logit
+
+class MiddleSAE(nn.Module):
+    """
+    Creates an autoencoder with a regressor component.
+    """
+
+    def __init__(self, embed_dim=2, in_features=None, num_classes=4):
+        super(MiddleSAE, self).__init__()
+        self.in_features = in_features
+        self.num_classes = num_classes
+        self.embed_dim = embed_dim
+        self.out1 = int(in_features // 1.5)
+        print(type(self.out1))
+        self.out2 = int(in_features // 2)
+        self.out3 = int(in_features // 3)
+        self.latent_dim = int(in_features // 4)
+        print(type(self.latent_dim))
+        self.type = 'middlesae'
+
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(self.in_features, self.out1),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(self.out1, self.out2),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(self.out2, self.out3),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(self.out3, self.latent_dim)
+        )
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Linear(self.latent_dim, self.out3),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(self.out3, self.out2),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(self.out2, self.out1),
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(self.out1, self.in_features)
+        )
+        # NN classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(self.latent_dim, 32),
+            nn.LeakyReLU(),
+            nn.Linear(32, 16),
+            nn.LeakyReLU(),
+            nn.Linear(16, 8),
+            nn.LeakyReLU(),
+            nn.Linear(8, self.num_classes)
+        )
+        # NN embedding
+        self.embedding = nn.Sequential(
+            nn.Linear(self.latent_dim, 32),
+            nn.LeakyReLU(),
+            nn.Linear(32, 16),
+            nn.LeakyReLU(),
+            nn.Linear(16, 8),
+            nn.LeakyReLU(),
+            nn.Linear(8, self.embed_dim)
+        )
+
+    def forward(self, x):
+        x = x.view(-1, self.in_features)
+        x = self.encoder(x)
+        embedding = self.embedding(x)
+        decoded = self.decoder(x)
+        logit = self.classifier(x)
+        return embedding, decoded, logit
 
 class Torch_ResNet(nn.Module):
     """
@@ -626,72 +699,22 @@ def train_sae_sequential(model, train_data, epochs=10):
 
     return model, history
 
-def train_sae_regressor(model, train_data, epochs=50):
-    '''
-    '''
-    batches = 64
-    task_fn = nn.MSELoss()
-    decoder_fn = nn.MSELoss()
-    train_loader = DataLoader(train_data, batch_size=batches, shuffle=True)
-    history = []
-    start_time = time.time()
-
-    print(f'Training {model.latent_dim}D model')
-    print('\tTraining Encoder, Decoder and Regressor')
-    history = []
-    # init optimizer
-    optimizer = optim.Adam(model.parameters(), lr=3e-4)
-    for epoch in range(epochs):
-        model.train()
-        # make epoch stat counters
-        total_loss = 0
-        total_taskloss = 0
-        total_reconloss = 0
-        for data, labels in train_loader:
-            encoded, decoded, logits = model(data)
-            logits = logits.view([data.size(0)]) # reshape logits before loss calculation
-            task_loss = task_fn(logits, labels)
-            recon_loss = decoder_fn(decoded, data)
-            loss = task_loss + recon_loss
-            # backprop
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            # update total loss counters
-            total_loss += loss.item()
-            total_taskloss += task_loss.item()
-            total_reconloss += recon_loss.item()
-
-        # average total loss across epoch batches
-        total_loss /= len(train_loader)
-        total_taskloss /= len(train_loader)
-        total_reconloss /= len(train_loader)
-
-        # print epoch results
-        print(f"\tEpoch {epoch+1}/{epochs}")
-        print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, recon loss: {total_reconloss}")
-        
-        history.append(round(float(total_loss), 4))
-    
-    end_time = time.time()
-    total_time = (end_time - start_time)/60
-    print("Total train time: ", total_time, " mins")
-
-    return model, history
-
-def train_sae(model, train_data, epochs=10):
+def train_sae(model, train_data, val_data, epochs=50, lr=3e-4, recon_weight=0.5, task_weight=0.1):
     '''
     '''
     # init variables
     task_fn = nn.CrossEntropyLoss()
     decoder_fn = nn.MSELoss()
     train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
-    optimizer = optim.Adam(model.parameters(), lr=3e-4)
+    val_loader = DataLoader(val_data, batch_size=64, shuffle=True)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     start_time = time.time()
     # begin training
-    print(f'Training {model.latent_dim}D model')
-    print('\tTraining Encoder, Decoder and Classifier')
+    #print(f'Training {model.latent_dim}D model')
+    #print('\tTraining Encoder, Decoder and Classifier')
     history = []
+    previous_valid = 1e4
+    patience = 0
     for epoch in range(epochs):
         model.train()
         # make epoch stat counters
@@ -700,8 +723,8 @@ def train_sae(model, train_data, epochs=10):
         total_reconloss = 0
         for data, labels in train_loader:
             encoded, decoded, logits = model(data)
-            task_loss = task_fn(logits, labels)
-            recon_loss = decoder_fn(decoded, data) * 100.0  # upweight reconstruction loss
+            task_loss = task_fn(logits, labels) * task_weight
+            recon_loss = decoder_fn(decoded, data) * recon_weight
             loss = task_loss + recon_loss
             # backprop
             optimizer.zero_grad()
@@ -717,66 +740,105 @@ def train_sae(model, train_data, epochs=10):
         total_taskloss /= len(train_loader)
         total_reconloss /= len(train_loader)
 
+        total_loss = round(float(total_loss), 5)
+        total_taskloss = round(float(total_taskloss), 5)
+        total_reconloss = round(float(total_reconloss), 5)
+
         # print epoch results
         print(f"\tEpoch {epoch+1}/{epochs}")
         print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, recon loss: {total_reconloss}")
         
-        history.append(round(float(total_loss), 4))
-    
+        history.append(total_loss)
+
+        # make epoch stat counters
+        total_valid_loss = 0
+        for v_data, v_labels in val_loader:
+            v_encoded, v_decoded, v_logits = model(v_data)
+            valid_task_loss = task_fn(v_logits, v_labels) * task_weight
+            valid_recon_loss = decoder_fn(v_decoded, v_data) * recon_weight
+            valid_loss = valid_task_loss + valid_recon_loss
+            # update total loss counters
+            total_valid_loss += valid_loss.item()
+        # average total loss across epoch batches
+        total_valid_loss /= len(val_loader)
+        total_valid_loss = round(float(total_valid_loss), 5)
+        print(f"\t\tvalid loss: {total_valid_loss}, previous valid: {previous_valid}\n")
+        if total_valid_loss > previous_valid:
+            patience += 1
+            previous_valid = total_valid_loss # reset previous validation loss tracker
+            if patience > 1:
+                print(f'Stopped early at epoch {epoch}')
+                break
+        else:
+            patience = 0 # reset counter
+            previous_valid = total_valid_loss # reset previous validation loss tracker
     end_time = time.time()
     total_time = (end_time - start_time)/60
     print("Total train time: ", total_time, " mins")
 
     return model, history
 
-def get_resnet_output(resnet, datasets, dataset_names, return_probs=True, save=False, save_path=None):
-    # get ResNet predictions
-    name_arr, preds_arr, probs_arr, conf_arr, lbls_arr = [], [], [], [], []
-    sm = nn.Softmax(dim=1) # row-wise softmax
-    for name in dataset_names:
-        dloader = DataLoader(datasets[name], batch_size=64, shuffle=False)
-        name_arr.append([name]*len(datasets[name]))
-        resnet.eval()
-        predictions, labels = [], []
-        for imgs, lbls in dloader:
-            with torch.no_grad():
-                probs = resnet.forward(imgs)
-                probs = sm(probs) # apply softmax to output
-                predictions.append(probs)
-                labels.extend(lbls)
-        # collapse tensors
-        all_probs = torch.cat(predictions).numpy()
-        probs_arr.append(all_probs) # holds confidence for all classes
-        conf_arr.append(np.max(all_probs, axis=1)) # keeps only highest confidence value
-        preds_arr.append(all_probs.argmax(axis=1)) # assigns prediction class
-        lbls_arr.append(np.array(labels))
-    
-    if return_probs == True: # export predicted probabilities for all classes
-        col_names = ['data', 'preds', 'labels'] + [f'conf{i}' for i in range(10)]
-        resnet_df = pd.DataFrame(columns=col_names)
-        resnet_df['data'] = np.concatenate(name_arr, axis=None)
-        resnet_df['preds'] = np.concatenate(preds_arr, axis=None)
-        resnet_df['labels'] = np.concatenate(lbls_arr, axis=None)
-        # add predicted probs
-        probs_vstack = stack = np.vstack(probs_arr)
-        for i in range(10): # iterate through classes
-            iprobs = np.concatenate(probs_vstack[:,i], axis=None)
-            resnet_df[f'conf{i}'] = iprobs
-    else: # retain only max pred prob value
-        resnet_df = pd.DataFrame(
-            {
-                'data':np.concatenate(name_arr, axis=None),
-                'preds':np.concatenate(preds_arr, axis=None),
-                'labels':np.concatenate(lbls_arr, axis=None),
-                'conf':np.concatenate(conf_arr, axis=None)
-            }
-        )
-    # column for binary True/False if prediction is correct
-    resnet_df['resnet_correct'] = resnet_df['preds'] == resnet_df['labels']
+def train_sae_center(model, train_data, epochs=10, lr=3e-4, center_weight=0.1, recon_weight=100):
+    '''
+    '''
+    # init variables
+    center_fn = CenterLoss(model.latent_dim, num_classes=model.num_classes, metric='L1')
+    task_fn = nn.CrossEntropyLoss()
+    decoder_fn = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+    # begin training
+    start_time = time.time()
+    print(f'Training {model.latent_dim}D model')
+    print('\tTraining Embedding, Decoder and Classifier')
+    history = []
+    for epoch in range(epochs):
+        model.train()
+        # make epoch stat counters
+        total_loss = 0
+        total_centerloss = 0
+        total_taskloss = 0
+        total_reconloss = 0
+        for data, labels in train_loader:
+            encoded, decoded, logits = model(data)
+            center_loss = center_fn(encoded, labels) * center_weight # upweight center loss
+            task_loss = task_fn(logits, labels)
+            recon_loss = decoder_fn(decoded, data) * recon_weight  # upweight reconstruction loss
+            loss = center_loss + task_loss + recon_loss
+
+            # backprop
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            # Update class centers after the batch
+            center_fn.update_centers(encoded.detach(), labels)
+            
+            # update total loss counters
+            total_loss += loss.item()
+            total_centerloss += center_loss.item()
+            total_taskloss += task_loss.item()
+            total_reconloss += recon_loss.item()
+
+        # average total loss across epoch batches
+        total_loss /= len(train_loader)
+        total_centerloss /= len(train_loader)
+        total_taskloss /= len(train_loader)
+        total_reconloss /= len(train_loader)
+
+        total_loss = round(float(total_loss), 5)
+        total_centerloss = round(float(total_centerloss), 5)
+        total_taskloss = round(float(total_taskloss), 5)
+        total_reconloss = round(float(total_reconloss), 5)
+
+        # print epoch results
+        print(f"\tEpoch {epoch+1}/{epochs}")
+        print(f"\t\ttotal loss: {total_loss}\n\t\tcenter loss: {total_centerloss}, task loss: {total_taskloss}, recon loss: {total_reconloss}")
         
-    if save==True:
-        # pickle and save
-        with open(save_path, 'wb') as df_stream:
-            pickle.dump(resnet_df, df_stream, pickle.HIGHEST_PROTOCOL) # use highest protocol
+        history.append(total_loss)
     
-    return resnet_df
+    end_time = time.time()
+    total_time = (end_time - start_time)/60
+    print("Total train time: ", total_time, " mins")
+
+    return model, history
