@@ -10,14 +10,18 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.ensemble import RandomForestRegressor
 from temperature_scaling import *
 from tqdm import tqdm
+from PIL import Image
+from pathlib import Path
 import torchvision.models as models
 import torch.optim.lr_scheduler as lr_scheduler
 import matplotlib.pyplot as plt
+from collections import defaultdict
 import inspect
 import random
 import numpy as np
 import pandas as pd
 import os
+import re
 import math
 import scipy
 import time
@@ -67,127 +71,113 @@ class CustomTensorDataset():
         else:
             raise TypeError("Unsupported data type for 'data'. Must be np.ndarray or torch.Tensor.")
 
-class ConvSAE(nn.Module):
-    def __init__(self, latent_dim=2, num_classes=10, channels=1, width=28):
-        super(ConvSAE, self).__init__()
-        self.latent_dim = latent_dim
-        self.channels = channels
-        self.in_features = (width ** 2) * channels
-        self.type = 'convsae'
-        self.num_classes = num_classes
-        
-        ## Encoder
-        self.encoder = nn.Sequential(
-            # two convolutional layers
-            nn.Conv2d(in_channels=channels, out_channels=width, kernel_size=3, stride=1, padding=1),  # Output: [w, w, w]
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            nn.Conv2d(in_channels=width, out_channels=width, kernel_size=3, stride=1, padding=1),  # Output: [w, w, w]
-            nn.BatchNorm2d(width), # Output: [w, w, w],
-            nn.LeakyReLU()
-        )
-        # maxpool
-        self.maxpool = nn.MaxPool2d(kernel_size=2, return_indices=True) # Output: [w, w/2, w/2], indices
-        self.maxout = int((width ** 3) / 4)
-        # dense layers
-        self.fc_encode = nn.Sequential(
-            nn.Flatten(), # Output: [w**3/4]
-            nn.Linear(self.maxout, 196),
-            nn.LeakyReLU(),
-            nn.Linear(196, latent_dim)
-        )
-        
-        ## Decoder
-        self.fc_decode = nn.Sequential(
-            # dense layers
-            nn.Linear(latent_dim, 196),
-            nn.LeakyReLU(),
-            nn.Linear(196, self.maxout), # Output: [w**3/4]
-            # reshape data
-            nn.Unflatten(dim=1, unflattened_size = (width, int(width/2), int(width/2))) # Output: [w, w/2, w/2]
-        )
-        self.maxunpool = nn.MaxUnpool2d(kernel_size=2) # Output: [w, w, w]
-        # two de-convolutional layers
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=width, out_channels=width, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            nn.ConvTranspose2d(in_channels=width, out_channels=channels, kernel_size=3, stride=1, padding=1),
-        )
-        
-        ## Two-layer MLP classifier
-        self.classifier = nn.Sequential(
-            nn.Linear(latent_dim, 20),
-            nn.LeakyReLU(),
-            nn.Linear(20, num_classes)
-        )
+class DermoDataset(Dataset):
+    '''
+    adapted from: https://stackoverflow.com/questions/77528929/pytorch-imagefolder-vs-custom-dataset-from-single-folder
+    '''
+    def __init__(self, targ_dir, meta_file, transform=None):
+        self.paths = list(Path(targ_dir).glob("*.jpg"))
+        self.meta = pd.read_csv(meta_file)
+        self.labels = list(map(self.get_label, self.paths))
+        self.transform = transform
     
-    def forward(self, x):
-        x = self.encoder(x)
-        x, indices = self.maxpool(x)
-        encoded = self.fc_encode(x)
-        logits = self.classifier(encoded)
-        decoded = self.fc_decode(encoded)
-        decoded = self.maxunpool(decoded, indices)
-        decoded = self.decoder(decoded)
-        return encoded, decoded, logits
+    def get_label(self, path):
+        # make sure this function returns the label from the path
+        match = re.search(r'ISIC_\d{7}', str(path))
+        label = self.meta.loc[self.meta['image_id'] == match.group()]['label'].item() # matches image id to binary label
+        return label
 
-class SmallConvSAE(nn.Module):
-    def __init__(self, latent_dim=2, num_classes=10, channels=1, width=28):
-        super(ConvSAE, self).__init__()
-        self.latent_dim = latent_dim
-        self.channels = channels
-        self.type = 'smallconvsae'
-        self.num_classes = num_classes
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        img = Image.open(self.paths[index]).convert('RGB')
+        class_idx = self.labels[index]
+
+        if self.transform:
+            return self.transform(img), class_idx
+        else:
+            return img, class_idx
+
+class DdiDataset(Dataset):
+    '''
+    adapted from: https://stackoverflow.com/questions/77528929/pytorch-imagefolder-vs-custom-dataset-from-single-folder
+    '''
+    def __init__(self, targ_dir, meta_file, transform=None):
+        self.paths = list(Path(targ_dir).glob("*.png"))
+        self.meta = pd.read_csv(meta_file)
+        self.labels = list(map(self.get_label, self.paths))
+        self.transform = transform
+    
+    def get_label(self, path):
+        # make sure this function returns the label from the path
+        match = re.search(r'images/(.+)', str(path)).group(1) # image ID
+        label = self.meta.loc[self.meta['DDI_file'] == match]['malignant'].astype(bool) # malignant T/F label 
+        label = int(label.iloc[0]) # pandas Series of len 1 to int
+        return label
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        img = Image.open(self.paths[index]).convert('RGB')
+        class_idx = self.labels[index]
+
+        if self.transform:
+            return self.transform(img), class_idx
+        else:
+            return img, class_idx
+
+class BalancedBatchSampler(Sampler):
+    def __init__(self, labels, batch_size):
+        """
+        Args:
+            labels (list or array): List of labels corresponding to the dataset items.
+            batch_size (int): Total batch size (must be divisible by number of classes).
+        """
+        self.labels = np.array(labels)
+        self.batch_size = batch_size
+        self.num_classes = len(np.unique(self.labels))
+        assert batch_size % self.num_classes == 0, "Batch size must be divisible by number of classes"
+        self.samples_per_class = batch_size // self.num_classes
         
-        ## Encoder
-        self.encoder = nn.Sequential(
-            # three convolutional layers
-            nn.Conv2d(in_channels=channels, out_channels=width, kernel_size=3, padding=1, stride=2),  # Output: [-1, w, 14, 14]
-            nn.LeakyReLU(),
-            nn.Conv2d(in_channels=width, out_channels=2*width, kernel_size=3, padding=1, stride=2), # Output: [-1, w*2, 7, 7]
-            nn.LeakyReLU(),
-            nn.Conv2d(in_channels=2*width, out_channels=2*width, kernel_size=3, padding=1, stride=2), # Output: [-1, w*2, 4, 4]
-            nn.LeakyReLU(),
-            nn.Flatten(), # Image grid to single feature vector, Output: [-1, 2*16*width]
-            nn.Linear(2*16*width, latent_dim) # Output: [-1, latent_dim]
-        )
+        # Map from label to indices
+        self.class_to_indices = defaultdict(list)
+        for idx, label in enumerate(self.labels):
+            self.class_to_indices[label].append(idx)
+        
+        # Shuffle class indices initially
+        for label in self.class_to_indices:
+            random.shuffle(self.class_to_indices[label])
 
-        ## Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 2*16*width),
-            nn.Unflatten(dim=1, unflattened_size = (2*width, 4, 4)),
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(in_channels=2*width, out_channels=width, kernel_size=3, padding=1, stride=2), # Output: [-1, w, 7, 7]
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(in_channels=width, out_channels=width, kernel_size=4, padding=1, stride=2), # Output: [-1, w, 14, 14]
-            nn.LeakyReLU(),
-            nn.ConvTranspose2d(in_channels=width, out_channels=channels, kernel_size=4, padding=1, stride=2), # Output: [-1, channels, w, w]
-        )
+        self.num_batches = min(len(self.class_to_indices[c]) for c in self.class_to_indices) // self.samples_per_class
 
-        ## Two-layer MLP classifier
-        self.classifier = nn.Sequential(
-            nn.Linear(latent_dim, 20),
-            nn.LeakyReLU(),
-            nn.Linear(20, num_classes)
-        )
+    def __iter__(self):
+        # Pointers to where we are in each class list
+        class_cursors = {label: 0 for label in self.class_to_indices}
+        
+        for _ in range(self.num_batches):
+            batch = []
+            for label in self.class_to_indices:
+                start = class_cursors[label]
+                end = start + self.samples_per_class
+                batch.extend(self.class_to_indices[label][start:end])
+                class_cursors[label] = end
+            random.shuffle(batch)
+            yield batch
 
-    def forward(self, x):
-        encoded = self.encoder(x)
-        decoded = self.decoder(encoded)
-        logits = self.classifier(encoded)
-        return encoded, decoded, logits
+    def __len__(self):
+        return self.num_batches
 
-class ResNetConvSAE(nn.Module):
-    def __init__(self, latent_dim=2, num_classes=10, channels=3, width=32):
-        super(ResNetConvSAE, self).__init__()
+class ResNetSAE(nn.Module):
+    def __init__(self, latent_dim=20, num_classes=2, channels=3, width=299):
+        super(ResNetSAE, self).__init__()
         self.latent_dim = latent_dim
-        self.type = 'resnetconvsae'
+        self.type = 'resnetsae'
         self.num_classes = num_classes
         
         # Load ResNet encoder
         resnet = models.resnet18(weights='IMAGENET1K_V1', progress=False)
-        #resnet = models.resnet18(progress=False)
 
         # Replace the fully connected layer
         num_features = resnet.fc.in_features
@@ -199,22 +189,47 @@ class ResNetConvSAE(nn.Module):
         
         # Decoder
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 2*16*width),
-            nn.Unflatten(dim=1, unflattened_size = (64, 4, 4)), # Output: [-1, w*2, w/8, w/8]
+            nn.Linear(latent_dim, 512),
+            nn.Unflatten(dim=1, unflattened_size=(32, 4, 4)),  # Output: [-1, 32, 4, 4]
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(in_channels=width*2, out_channels=width, kernel_size=4, padding=1, stride=2), # Output: [-1, w, w/4, w/4]
+            # First deconv: 4x4 -> 8x8
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(in_channels=width, out_channels=width, kernel_size=4, padding=1, stride=2), # Output: [-1, w, w/2, w/2]
+            # Second deconv: 8x8 -> 16x16
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
             nn.LeakyReLU(),
-            nn.ConvTranspose2d(in_channels=width, out_channels=channels, kernel_size=4, padding=1, stride=2), # Output: [-1, channels, w, w]
+            # Third deconv: 16x16 -> 32x32
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Fourth deconv: 32x32 -> 64x64
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Fifth deconv: 64x64 -> 128x128
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Sixth deconv: 128x128 -> 256x256
+            nn.ConvTranspose2d(in_channels=32, out_channels=channels, kernel_size=4, padding=1, stride=2),
+            # Upsample: 256x256 -> 299x299
+            nn.Upsample(size=(299, 299), mode='bilinear', align_corners=False)
         )
-        
-        ## Two-layer MLP classifier
+
+        # NN classifier
         self.classifier = nn.Sequential(
-            nn.Linear(latent_dim, 20),
+            nn.Linear(self.latent_dim, 32),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
-            nn.Linear(20, num_classes)
+            nn.Linear(32, 16),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(16, 8),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(8, num_classes)
         )
     
     def forward(self, x):
@@ -222,60 +237,6 @@ class ResNetConvSAE(nn.Module):
         decoded = self.decoder(encoded)
         logits = self.classifier(encoded)
         return encoded, decoded, logits
-
-class RegressorSAE(nn.Module):
-    """
-    Creates an autoencoder with a regressor component.
-    """
-    def __init__(self, latent_dim=2, in_features=8):
-        super(RegressorSAE, self).__init__()
-        self.in_features = in_features
-        self.latent_dim = latent_dim
-        self.type='regressor'
-        
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(in_features, 64),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(64, 32),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(32, 16),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(16, latent_dim)
-        )
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 16),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(16, 32),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(32, 64),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(64, in_features)
-        )
-        # NN regressor
-        self.regressor = nn.Sequential(
-            nn.Linear(self.latent_dim, 32),
-            nn.LeakyReLU(),
-            nn.Linear(32, 16),
-            nn.LeakyReLU(),
-            nn.Linear(16, 8),
-            nn.LeakyReLU(),
-            nn.Linear(8, 1)
-        )
-    
-    def forward(self, x):
-        x = x.view(-1, self.in_features)
-        encoded = self.encoder(x)
-        decoded = self.decoder(encoded)
-        logit = self.regressor(encoded)
-        return encoded, decoded, logit
 
 
 class FcSAE(nn.Module):
@@ -333,119 +294,6 @@ class FcSAE(nn.Module):
         decoded = self.decoder(encoded)
         logit = self.classifier(encoded)
         return encoded, decoded, logit
-
-class MiddleSAE(nn.Module):
-    """
-    Creates an autoencoder with a regressor component.
-    """
-
-    def __init__(self, embed_dim=2, in_features=None, num_classes=4):
-        super(MiddleSAE, self).__init__()
-        self.in_features = in_features
-        self.num_classes = num_classes
-        self.embed_dim = embed_dim
-        self.out1 = int(in_features // 1.5)
-        print(type(self.out1))
-        self.out2 = int(in_features // 2)
-        self.out3 = int(in_features // 3)
-        self.latent_dim = int(in_features // 4)
-        print(type(self.latent_dim))
-        self.type = 'middlesae'
-
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(self.in_features, self.out1),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(self.out1, self.out2),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(self.out2, self.out3),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(self.out3, self.latent_dim)
-        )
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(self.latent_dim, self.out3),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(self.out3, self.out2),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(self.out2, self.out1),
-            nn.LeakyReLU(),
-            nn.Dropout(p=0.2),
-            nn.Linear(self.out1, self.in_features)
-        )
-        # NN classifier
-        self.classifier = nn.Sequential(
-            nn.Linear(self.latent_dim, 32),
-            nn.LeakyReLU(),
-            nn.Linear(32, 16),
-            nn.LeakyReLU(),
-            nn.Linear(16, 8),
-            nn.LeakyReLU(),
-            nn.Linear(8, self.num_classes)
-        )
-        # NN embedding
-        self.embedding = nn.Sequential(
-            nn.Linear(self.latent_dim, 32),
-            nn.LeakyReLU(),
-            nn.Linear(32, 16),
-            nn.LeakyReLU(),
-            nn.Linear(16, 8),
-            nn.LeakyReLU(),
-            nn.Linear(8, self.embed_dim)
-        )
-
-    def forward(self, x):
-        x = x.view(-1, self.in_features)
-        x = self.encoder(x)
-        embedding = self.embedding(x)
-        decoded = self.decoder(x)
-        logit = self.classifier(x)
-        return embedding, decoded, logit
-
-class Torch_ResNet(nn.Module):
-    """
-    adapted from:
-        https://colab.research.google.com/github/kjamithash/Pytorch_DeepLearning_Experiments/blob/master/
-        FashionMNIST_ResNet_TransferLearning.ipynb#scrollTo=LzkK82Swc4ca
-    """
-    def __init__(self, pretrained=False, in_channels=1, num_classes=10, layers=18):
-        super(Torch_ResNet, self).__init__()
-        self.num_classes = num_classes
-        self.type = 'resnet'
-        
-        # Load a pretrained resnet model from torchvision.models in Pytorch
-        if pretrained == True:
-            if layers == 18:
-                self.model = models.resnet18(weights='DEFAULT')
-            elif layers == 34:
-                self.model = models.resnet34(weights='DEFAULT')
-            # Freeze earlier layers
-            for param in self.model.parameters():
-                param.requires_grad = False  # Freeze all layers
-            # Unfreeze the final layer
-            for param in self.model.fc.parameters():
-                param.requires_grad = True
-        else:
-            if layers == 18:
-                self.model = models.resnet18()
-            elif layers == 34:
-                self.model = models.resnet34()
-        
-        # original first layer: self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.model.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
-        # Change the output layer to output c classes instead of 1000 classes
-        in_ftrs = self.model.fc.in_features
-        self.model.fc = nn.Linear(in_ftrs, num_classes)
-        self.model.maxpool = nn.Identity()  # Skip max-pooling for small images
-
-    def forward(self, x):
-        return self.model(x)
 
 # for checking the dimensions of intermediate outputs
 def get_activation(name):

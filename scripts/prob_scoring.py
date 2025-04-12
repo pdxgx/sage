@@ -22,7 +22,7 @@ def get_embedding(model, data_dict, dim, softmax=False):
         print(f'\tOutputting {name}')
         # get output
         data_loader = DataLoader(data, batch_size=64, shuffle=False)
-        latent_space, rloss, task  = [], [], []
+        latent_space, rloss, task, labels  = [], [], [], []
         with torch.no_grad():
             for dat, lbls in data_loader:
                 encoded, decoded, logits = model(dat)
@@ -34,19 +34,22 @@ def get_embedding(model, data_dict, dim, softmax=False):
                 if softmax == True:
                     logits = sm(logits) # get softmax confidence scores when no calibration
                 task.append(logits)
+                labels.append(lbls)
         latent_space = torch.cat(latent_space).numpy()
         rloss = np.array(rloss)
         task = torch.cat(task).numpy()
+        labels = torch.cat(labels).numpy()
         # append to lists
         latent_list.append(latent_space)
         rloss_list.append(rloss)
         task_list.append(task)
+        label_list.append(labels)
         name_list.append([name]*len(data_dict[name]))
-        try:
-            targets = data.targets
-        except AttributeError:
-            targets = data.labels
-        label_list.append(np.array(targets))
+        #try:
+            #targets = data.targets
+        #except AttributeError:
+            #targets = data.labels
+        #label_list.append(np.array(targets))
     
     # make pandas df from SAE outputs
     print('Making dataframe')
@@ -140,14 +143,14 @@ def get_max_conf(latent_df, n_classes):
     latent_df['task'] = task_data.max(axis=1) # maximum confidence value for rows
     return latent_df
 
-def get_latent_distance(latent_df, data_dict, dim, k=100, reference='train', metric='manhattan'):
+def get_latent_distance(latent_df, datasets, dim, k=100, reference='train', metric='manhattan'):
     dist_arr = []
     latent_cols = ['latent'+str(i) for i in range(1, dim+1)]
     # get training latent space
     train_latent = latent_df.loc[latent_df['data'] == reference][latent_cols].to_numpy()
     # fit BallTree to train latent space, use L1 distance metric as default
     tree = BallTree(train_latent, metric=metric)
-    for name in data_dict.keys():
+    for name in datasets:
         name_latent = latent_df.loc[latent_df['data'] == name][latent_cols].to_numpy()
         # query tree
         if name == reference:
