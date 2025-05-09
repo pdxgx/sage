@@ -1,7 +1,7 @@
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
-from torchvision import datasets
+from torchvision import datasets, transforms
 from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset, TensorDataset, RandomSampler, Sampler
 from sklearn.metrics import accuracy_score, DistanceMetric
 from sklearn.neighbors import NearestNeighbors, KNeighborsRegressor, BallTree, KDTree, KernelDensity
@@ -71,7 +71,7 @@ class CustomTensorDataset():
         else:
             raise TypeError("Unsupported data type for 'data'. Must be np.ndarray or torch.Tensor.")
 
-class DermoDataset(Dataset):
+class HamDataset(Dataset):
     '''
     adapted from: https://stackoverflow.com/questions/77528929/pytorch-imagefolder-vs-custom-dataset-from-single-folder
     '''
@@ -83,25 +83,26 @@ class DermoDataset(Dataset):
     
     def get_label(self, path):
         # make sure this function returns the label from the path
-        match = re.search(r'ISIC_\d{7}', str(path))
-        label = self.meta.loc[self.meta['image_id'] == match.group()]['label'].item() # matches image id to binary label
+        match = re.search(r'ISIC_\d{7}', str(path)).group(0)
+        label = self.meta.loc[self.meta['image_id'] == match]['label'].item() # matches image id to HAM10000 class label
         return label
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, index):
-        img = Image.open(self.paths[index]).convert('RGB')
+        path = self.paths[index]
+        img = Image.open(path).convert('RGB')
         class_idx = self.labels[index]
+        img_id = re.search(r'ISIC_\d{7}', str(path)).group(0) # matches 'image_id' column in metadata.csv
 
         if self.transform:
-            return self.transform(img), class_idx
+            return self.transform(img), class_idx, img_id
         else:
-            return img, class_idx
+            return img, class_idx, img_id
 
 class DdiDataset(Dataset):
     '''
-    adapted from: https://stackoverflow.com/questions/77528929/pytorch-imagefolder-vs-custom-dataset-from-single-folder
     '''
     def __init__(self, targ_dir, meta_file, transform=None):
         self.paths = list(Path(targ_dir).glob("*.png"))
@@ -120,13 +121,75 @@ class DdiDataset(Dataset):
         return len(self.paths)
 
     def __getitem__(self, index):
-        img = Image.open(self.paths[index]).convert('RGB')
+        path = self.paths[index]
+        img = Image.open(path).convert('RGB')
         class_idx = self.labels[index]
+        img_id = re.search(r'images/(.+)', str(path)).group(1) # matches 'DDI_file' column in metadata.csv
 
         if self.transform:
-            return self.transform(img), class_idx
+            return self.transform(img), class_idx, img_id
         else:
-            return img, class_idx
+            return img, class_idx, img_id
+
+class HibaDataset(Dataset):
+    '''
+    '''
+    def __init__(self, targ_dir, meta_file, transform=None):
+        self.paths = list(Path(targ_dir).glob("*.jpg"))
+        self.meta = pd.read_csv(meta_file)
+        self.labels = list(map(self.get_label, self.paths))
+        self.transform = transform
+    
+    def get_label(self, path):
+        # make sure this function returns the label from the path
+        match = re.search(r'ISIC_\d{7}', str(path)).group(0)
+        label = self.meta.loc[self.meta['isic_id'] == match]['malignant'] # malignant binary label
+        label = int(label.iloc[0]) # pandas Series of len 1 to int
+        return label
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        path = self.paths[index]
+        img = Image.open(path).convert('RGB')
+        class_idx = self.labels[index]
+        img_id = re.search(r'ISIC_\d{7}', str(path)).group(0) # matches 'isic_id' column in metadata.csv
+
+        if self.transform:
+            return self.transform(img), class_idx, img_id
+        else:
+            return img, class_idx, img_id
+
+class UfesDataset(Dataset):
+    '''
+    '''
+    def __init__(self, targ_dir, meta_file, transform=None):
+        self.paths = list(Path(targ_dir).glob("*.png"))
+        self.meta = pd.read_csv(meta_file)
+        self.labels = list(map(self.get_label, self.paths))
+        self.transform = transform
+    
+    def get_label(self, path):
+        # make sure this function returns the label from the path
+        match = re.search(r'images/(.+)', str(path)).group(1) # image ID
+        label = self.meta.loc[self.meta['img_id'] == match]['malignant'] # malignant binary label 
+        label = int(label.iloc[0]) # pandas Series of len 1 to int
+        return label
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        path = self.paths[index]
+        img = Image.open(path).convert('RGB')
+        class_idx = self.labels[index]
+        img_id = re.search(r'images/(.+)', str(path)).group(1) # matches 'img_id' column in metadata.csv
+
+        if self.transform:
+            return self.transform(img), class_idx, img_id
+        else:
+            return img, class_idx, img_id
 
 class BalancedBatchSampler(Sampler):
     def __init__(self, labels, batch_size):
@@ -170,26 +233,48 @@ class BalancedBatchSampler(Sampler):
         return self.num_batches
 
 class ResNetSAE(nn.Module):
-    def __init__(self, latent_dim=20, num_classes=2, channels=3, width=299):
+    def __init__(self, latent_dim=20, num_classes=2, channels=3):
         super(ResNetSAE, self).__init__()
         self.latent_dim = latent_dim
-        self.type = 'resnetsae'
+        self.type = 'ResNetSAE'
         self.num_classes = num_classes
         
         # Load ResNet encoder
-        resnet = models.resnet18(weights='IMAGENET1K_V1', progress=False)
+        resnet = models.resnet50(weights='IMAGENET1K_V1', progress=False)
+        #resnet = models.resnet101(weights='IMAGENET1K_V1', progress=False)
 
         # Replace the fully connected layer
         num_features = resnet.fc.in_features
-        resnet.fc = nn.Sequential(
-            nn.Linear(num_features, latent_dim),  # Map to latent_dim
-        )
-        # Encoder is ResNet
+        resnet.fc = nn.Linear(num_features, latent_dim)
+        
+        # Encoder is pre-trained ResNet
         self.encoder = resnet
         
         # Decoder
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 512),
+            # expand compressed embedding vector
+            # First fc
+            nn.Linear(latent_dim, 75),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Second fc
+            nn.Linear(75, 150),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Third fc
+            nn.Linear(150, 225),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Fourth fc
+            nn.Linear(225, 300),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Fifth fc
+            nn.Linear(300, 375),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Sixth fc
+            nn.Linear(375, 512),
             nn.Unflatten(dim=1, unflattened_size=(32, 4, 4)),  # Output: [-1, 32, 4, 4]
             nn.LeakyReLU(),
             # First deconv: 4x4 -> 8x8
@@ -214,23 +299,314 @@ class ResNetSAE(nn.Module):
             nn.LeakyReLU(),
             # Sixth deconv: 128x128 -> 256x256
             nn.ConvTranspose2d(in_channels=32, out_channels=channels, kernel_size=4, padding=1, stride=2),
-            # Upsample: 256x256 -> 299x299
-            nn.Upsample(size=(299, 299), mode='bilinear', align_corners=False)
+            nn.BatchNorm2d(channels),
+            nn.LeakyReLU(),
+            # Upsample layer: 256x256 -> 299x299
+            nn.Upsample(size=(299, 299), mode='bilinear', align_corners=True),
+            nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1, stride=1),  # Refinement convolution
         )
 
-        # NN classifier
-        self.classifier = nn.Sequential(
-            nn.Linear(self.latent_dim, 32),
+        if latent_dim < num_classes:
+            # NN classifier with hourglass shape
+            self.classifier = nn.Sequential(
+                # First fc expands
+                nn.Linear(self.latent_dim, 8),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Second fc expands
+                nn.Linear(8, 16),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Third fc expands
+                nn.Linear(16, 24),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Fourth fc expands
+                nn.Linear(24, 32),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Fifth fc reduces
+                nn.Linear(32, 24),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Sixth fc reduces
+                nn.Linear(24, 16),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Seventh fc predicts
+                nn.Linear(16, num_classes)
+            )
+        else:
+            # NN classifier
+            self.classifier = nn.Sequential(
+                nn.Linear(self.latent_dim, 32),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(32, 26),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(26, 20),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(20, 14),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(14, num_classes)
+            )
+    
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        logits = self.classifier(encoded)
+        return encoded, decoded, logits
+
+class InceptionSAE(nn.Module):
+    def __init__(self, latent_dim=20, num_classes=2, channels=3):
+        super(InceptionSAE, self).__init__()
+        self.latent_dim = latent_dim
+        self.type = 'InceptionSAE'
+        self.num_classes = num_classes
+        
+        # Load ResNet encoder
+        incept = models.inception_v3(weights='IMAGENET1K_V1', aux_logits=True) # causes weight loading error if no aux_logits
+
+        # Replace the fully connected layer
+        num_features = incept.fc.in_features
+        incept.fc = nn.Linear(num_features, latent_dim)  # Map to latent_dim
+        
+        # Encoder is pre-trained Inception V3
+        self.encoder = incept
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            # expand compressed embedding vector
+            # First fc
+            nn.Linear(latent_dim, 75),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
-            nn.Linear(32, 16),
+            # Second fc
+            nn.Linear(75, 150),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
-            nn.Linear(16, 8),
+            # Third fc
+            nn.Linear(150, 225),
             nn.LeakyReLU(),
             nn.Dropout(0.2),
-            nn.Linear(8, num_classes)
+            # Fourth fc
+            nn.Linear(225, 300),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Fifth fc
+            nn.Linear(300, 375),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Sixth fc
+            nn.Linear(375, 512),
+            nn.Unflatten(dim=1, unflattened_size=(32, 4, 4)),  # Output: [-1, 32, 4, 4]
+            nn.LeakyReLU(),
+            # First deconv: 4x4 -> 8x8
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Second deconv: 8x8 -> 16x16
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Third deconv: 16x16 -> 32x32
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Fourth deconv: 32x32 -> 64x64
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Fifth deconv: 64x64 -> 128x128
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Sixth deconv: 128x128 -> 256x256
+            nn.ConvTranspose2d(in_channels=32, out_channels=channels, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(channels),
+            nn.LeakyReLU(),
+            # Upsample layer: 256x256 -> 299x299
+            nn.Upsample(size=(299, 299), mode='bilinear', align_corners=True),
+            nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1, stride=1),  # Refinement convolution
         )
+
+        if latent_dim < num_classes:
+            # NN classifier with hourglass shape
+            self.classifier = nn.Sequential(
+                # First fc expands
+                nn.Linear(self.latent_dim, 8),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Second fc expands
+                nn.Linear(8, 16),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Third fc expands
+                nn.Linear(16, 24),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Fourth fc expands
+                nn.Linear(24, 32),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Fifth fc reduces
+                nn.Linear(32, 24),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Sixth fc reduces
+                nn.Linear(24, 16),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Seventh fc predicts
+                nn.Linear(16, num_classes)
+            )
+        else:
+            # NN classifier
+            self.classifier = nn.Sequential(
+                nn.Linear(self.latent_dim, 32),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(32, 26),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(26, 20),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(20, 14),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(14, num_classes)
+            )
+    
+    def forward(self, x):
+        encoded, _ = self.encoder(x)
+        decoded = self.decoder(encoded)
+        logits = self.classifier(encoded)
+        return encoded, decoded, logits
+
+class VitSAE(nn.Module):
+    def __init__(self, latent_dim=20, num_classes=2, channels=3):
+        super(VitSAE, self).__init__()
+        self.latent_dim = latent_dim
+        self.type = 'VitSAE'
+        self.num_classes = num_classes
+        
+        # Load ResNet encoder
+        vit = models.vit_b_16(weights='IMAGENET1K_V1')
+
+        # Replace the fully connected layer
+        num_features = vit.heads.head.in_features
+        vit.heads.head = nn.Linear(num_features, latent_dim)  # Map to latent_dim
+        
+        # Encoder is pre-trained ViT-Base with 16x16 input patch size
+        self.encoder = vit
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            # expand compressed embedding vector
+            # First fc
+            nn.Linear(latent_dim, 75),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Second fc
+            nn.Linear(75, 150),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Third fc
+            nn.Linear(150, 225),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Fourth fc
+            nn.Linear(225, 300),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Fifth fc
+            nn.Linear(300, 375),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            # Sixth fc
+            nn.Linear(375, 512),
+            nn.Unflatten(dim=1, unflattened_size=(32, 4, 4)),  # Output: [-1, 32, 4, 4]
+            nn.LeakyReLU(),
+            # First deconv: 4x4 -> 8x8
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Second deconv: 8x8 -> 16x16
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Third deconv: 16x16 -> 32x32
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Fourth deconv: 32x32 -> 64x64
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Fifth deconv: 64x64 -> 128x128
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Sixth deconv: 128x128 -> 256x256
+            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            # Resizing layer: 256x256 -> 224x224
+            nn.Conv2d(in_channels=32, out_channels=channels, kernel_size=3, padding=1), # drops channels from 32 -> 3
+            nn.AdaptiveAvgPool2d((224, 224))
+        )
+
+        if latent_dim < num_classes:
+            # NN classifier with hourglass shape
+            self.classifier = nn.Sequential(
+                # First fc expands
+                nn.Linear(self.latent_dim, 8),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Second fc expands
+                nn.Linear(8, 16),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Third fc expands
+                nn.Linear(16, 24),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Fourth fc expands
+                nn.Linear(24, 32),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Fifth fc reduces
+                nn.Linear(32, 24),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Sixth fc reduces
+                nn.Linear(24, 16),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                # Seventh fc predicts
+                nn.Linear(16, num_classes)
+            )
+        else:
+            # NN classifier
+            self.classifier = nn.Sequential(
+                nn.Linear(self.latent_dim, 32),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(32, 26),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(26, 20),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(20, 14),
+                nn.LeakyReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(14, num_classes)
+            )
     
     def forward(self, x):
         encoded = self.encoder(x)
@@ -295,109 +671,6 @@ class FcSAE(nn.Module):
         logit = self.classifier(encoded)
         return encoded, decoded, logit
 
-# for checking the dimensions of intermediate outputs
-def get_activation(name):
-    '''
-    Usage:
-        print(model.encoder[-1])
-        activation = {}
-        model.encoder[-1].register_forward_hook(get_activation('out'))
-        for img, label in dl:
-            output = model(img)
-            print(activation['out'].shape)
-            break
-    '''
-    def hook(model, input, output):
-        activation[name] = output.detach()
-    return hook
-
-def initialize_weights(model):
-    for m in model.modules():
-        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
-            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
-
-def hard_triplets(encoded, y):
-    distance_matrix = torch.cdist(encoded, encoded, p=1) # Create square distance matrix
-    anchors = []
-    positives = []
-    negatives = []
-    for j in range(len(y)):
-        anchor_label = y[j].item()
-        anchor_distance = distance_matrix[j] # distance between anchor and all other points
-        # Hardest positive (farthest in the same class)
-        hardest_positive_idx = (y == anchor_label).nonzero(as_tuple=True)[0] # all same class indices
-        hardest_positive_idx = hardest_positive_idx[hardest_positive_idx != j] # exclude anchor point index
-        if hardest_positive_idx.numel() == 0:
-            continue  # Skip if no positives in batch
-        hardest_positive = hardest_positive_idx[anchor_distance[hardest_positive_idx].argmax()]
-        # Hardest negative (closest from different class)
-        hardest_negative_idx = (y != anchor_label).nonzero(as_tuple=True)[0] # all diff class indices
-        if hardest_negative_idx.numel() == 0:
-            continue  # Skip if no negatives in batch
-        hardest_negative = hardest_negative_idx[anchor_distance[hardest_negative_idx].argmin()] # index of closest different class
-        # load selected
-        anchors.append(encoded[j])
-        positives.append(encoded[hardest_positive])
-        negatives.append(encoded[hardest_negative])
-    
-    # Convert lists to tensors
-    anchors = torch.stack(anchors)
-    positives = torch.stack(positives)
-    negatives = torch.stack(negatives)
-    
-    return anchors, positives, negatives
-
-def semihard_triplets(encoded, y, margin=1.0):
-    distance_matrix = torch.cdist(encoded, encoded, p=1)  # Create square distance matrix
-    anchors = []
-    positives = []
-    negatives = []
-    for j in range(len(y)):
-        anchor_label = y[j].item()
-        anchor_distance = distance_matrix[j]  # distance between anchor and all other points
-        
-        # Hardest positive (farthest in the same class)
-        positive_indices = (y == anchor_label).nonzero(as_tuple=True)[0]  # all same class indices
-        positive_indices = positive_indices[positive_indices != j]  # exclude anchor point index
-        if positive_indices.numel() == 0:
-            continue  # Skip if no positives in batch
-        hardest_positive = positive_indices[anchor_distance[positive_indices].argmax()]
-        hardest_positive_distance = anchor_distance[hardest_positive]
-
-        # Semi-hard negative (between the hardest positive and hardest positive + margin)
-        negative_indices = (y != anchor_label).nonzero(as_tuple=True)[0]  # all diff class indices
-        if negative_indices.numel() == 0:
-            continue  # Skip if no negatives in batch
-        negative_distances = anchor_distance[negative_indices]
-        
-        # Select negatives that are closer than the hardest positive and violate the margin
-        semihard_negative_mask = negative_distances < (hardest_positive_distance + margin)
-        semihard_negative_mask &= negative_distances > hardest_positive_distance
-        semihard_negative_indices = negative_indices[semihard_negative_mask]
-        
-        if semihard_negative_indices.numel() == 0:
-            continue  # Skip if no semi-hard negatives found
-        #semihard_negative = semihard_negative_indices[negative_distances[semihard_negative_mask].argmin()] # hardest semihard negative
-        
-        # randomly select a semihard negative
-        semihard_negative = np.random.choice(semihard_negative_indices, 1)[0]
-        
-        # Append triplet components
-        anchors.append(encoded[j])
-        positives.append(encoded[hardest_positive])
-        negatives.append(encoded[semihard_negative])
-
-    # Convert lists to tensors
-    if len(anchors) == 0:  # Handle edge case where no triplets are found
-        return None, None, None
-    anchors = torch.stack(anchors)
-    positives = torch.stack(positives)
-    negatives = torch.stack(negatives)
-
-    return anchors, positives, negatives
-
 class CenterLoss(nn.Module):
     def __init__(self, latent_dim, num_classes=10, metric='L2'):
         super(CenterLoss, self).__init__()
@@ -416,6 +689,8 @@ class CenterLoss(nn.Module):
         """
         # Get the centers of the classes for the given labels
         batch_size = embeddings.size(0)
+        # Ensure labels are long and on the same device as centers
+        labels = labels.long().to(self.centers.device)
         centers_batch = self.centers[labels]  # Shape: (batch_size, feat_dim)
 
         if self.metric == 'L1':
@@ -437,6 +712,8 @@ class CenterLoss(nn.Module):
         :param alpha: The update factor for the centers (learning rate)
         """
         batch_size = embeddings.size(0)
+        embeddings = embeddings.to(self.centers.device)
+        labels = labels.long().to(self.centers.device)
         # Ensure the centers don't require gradients
         with torch.no_grad():
             # Update class centers using the average of the current batch's features
@@ -445,101 +722,158 @@ class CenterLoss(nn.Module):
                 # 1-alpha is momentum of previous center value
                 self.centers.data[label] = (1 - alpha) * self.centers.data[label] + alpha * embeddings[i]
 
-def train_sae_sequential(model, train_data, epochs=10):
+def train_sae_sequential(model, train_data, epochs=20, batch_size=64, sampler=None):
     '''
     '''
-    batches = 64
-    center_fn = CenterLoss(model.latent_dim)
-    task_fn = nn.CrossEntropyLoss()
-    decoder_fn = nn.MSELoss()
-    train_loader = DataLoader(train_data, batch_size=batches, shuffle=True)
-    history = dict()
+    # set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+    # init loss fxns
+    center_fn = CenterLoss(model.latent_dim).to(device)
+    classifier_fn = nn.CrossEntropyLoss().to(device)
+    decoder_fn = nn.MSELoss().to(device)
+    
+    lambda_center = 0.1 # Weight for center loss
+    lambda_classifier = 0.5  # Weight for classification loss stage 1
+    #lambda_classifier2 = 0.1  # Weight for classification loss stage 2
+    lambda_decoder = 0.5  # Weight for reconstruction loss
+    
+    if sampler:
+        train_loader = DataLoader(train_data, batch_sampler=sampler)
+    else:
+        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+    history = list()
     start_time = time.time()
 
     print(f'Training {model.latent_dim}D model')
-    print('\tTraining Encoder and Classifier (Classification + Contrastive Loss)')
-    history1 = []
+
+    ## STAGE 1
+    print('\tStage 1 – Encoder and Classifier')
+    
     # init optimizer for stage 1
-    optimizer1 = optim.Adam(
+    optimizer1 = optim.AdamW(
         list(model.encoder.parameters()) + 
         list(model.classifier.parameters()),
-        lr=3e-4
+        lr=1e-4,
+        weight_decay=1e-5
     )
+    previous_centerloss = 1e4 # init center loss tracker with high value
     for epoch in range(epochs):
+        print(f"\tEpoch {epoch + 1}/{epochs}:")
         model.train()
-        # make epoch stat counters
-        total_loss = 0
-        total_taskloss = 0
-        total_centerloss = 0
-        for data, labels in train_loader:
-            encoded, _, logits = model(data)
+        
+        # make running counters
+        running_loss = 0
+        running_classloss = 0
+        running_centerloss = 0
+        n_correct = 0
+        total_samples = 0
+        
+        for data, labels, _ in train_loader:
+            
+            data, labels = data.to(device), labels.to(device) # push to device
+            labels = labels.long() # ensures correct indexing
+            encoded, decoded, logits = model(data) # forward pass
+            
+            # Calculate loss
             center_loss = center_fn(encoded, labels)
-            center_loss *= 0.1 # downweight center loss contribution to gradient
-            task_loss = task_fn(logits, labels)
-            loss = center_loss + task_loss
-            # backprop
+            class_loss = classifier_fn(logits, labels)
+            loss = (center_loss * lambda_center) + (class_loss * lambda_classifier) # weighted loss terms
+            
+            # Backprop
             optimizer1.zero_grad()
             loss.backward()
             optimizer1.step()
+            
             # Update class centers after the batch
             center_fn.update_centers(encoded.detach(), labels)
-            # update total loss counters
-            total_loss += loss.item()
-            total_taskloss += task_loss.item()
-            total_centerloss += center_loss.item()
+            
+            # Update total loss counters
+            running_loss += loss.item() * data.size(0)
+            running_classloss += class_loss.item() * data.size(0)
+            running_centerloss += center_loss.item() * data.size(0)
+            
+            # Get accuracy
+            _, preds = torch.max(logits, 1)
+            n_correct += (preds == labels).sum().item()
+            total_samples += labels.size(0)
         
-        # average total loss across epoch batches
-        total_loss /= len(train_loader)
-        total_taskloss /= len(train_loader)
-        total_centerloss /= len(train_loader)
+        # Get average batch loss
+        total_loss = running_loss / total_samples
+        total_classloss = running_classloss / total_samples
+        total_centerloss = running_centerloss / total_samples
+        accuracy = n_correct / total_samples * 100
+        
         # print epoch results
-        print(f"\tEpoch {epoch+1}/{epochs}")
-        print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, center loss: {total_centerloss},")
-        history1.append(round(float(total_loss), 4))
-    history['stage1'] = history1
+        print(f"\t\tTotal Loss: {total_loss:.4f} | Class Loss: {total_classloss:.4f} | Center Loss: {total_centerloss:.4f} | Accuracy: {accuracy:.2f}%")
+        history.append(total_loss)
         
-    print('\n\tTraining Encoder and Decoder (Classification + Reconstruction Loss)')
-    # freeze classifier weights
-    #for param in model.classifier.parameters():
-        #param.requires_grad = False
+        # Train stage 1 until center loss tracker stops improving
+        if total_centerloss < previous_centerloss:
+            previous_centerloss = total_centerloss # set new minimum
+        elif total_centerloss > previous_centerloss:
+            print(f'\t\tEarly stop for CenterLoss at epoch: {epoch + 1}')
+            break # early stop
         
+    ## STAGE 2
+    print('\n\tStage 2 – Encoder, Decoder and Classifier')   
+    
     # init stage 2 optimizer
-    optimizer2 = optim.Adam(
-        [
-            {'params': model.encoder.parameters(), 'lr': 1e-4},  # Low learning rate for encoder
-            {'params': model.classifier.parameters(), 'lr': 5e-5},  # Lowest learning rate for classifier
-            {'params': model.decoder.parameters(), 'lr': 3e-4}
-        ]
-    )
-    history2 = []
+    #optimizer2 = optim.AdamW(
+        #[
+            #{'params': model.encoder.parameters(), 'lr': 1e-4},
+            #{'params': model.classifier.parameters(), 'lr': 5e-5},  # Lower learning rate for classifier
+            #{'params': model.decoder.parameters(), 'lr': 1e-4},
+        #],
+        #weight_decay=1e-5
+    #)
+    optimizer2 = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    
     for epoch in range(epochs):
+        print(f"\tEpoch {epoch + 1}/{epochs}:")
         model.train()
-        # make epoch stat counters
-        total_loss = 0
-        total_taskloss = 0
-        total_reconloss = 0
-        for data, labels in train_loader:
-            _, decoded, logits = model(data)
-            task_loss = task_fn(logits, labels)
+        
+        # make running counters
+        running_loss = 0
+        running_classloss = 0
+        running_decoderloss = 0
+        n_correct = 0
+        total_samples = 0
+        
+        for data, labels, _ in train_loader:
+            
+            data, labels = data.to(device), labels.to(device) # push to device
+            encoded, decoded, logits = model(data) # forward pass
+            labels = labels.long()
+            
+            # Calculate loss
+            class_loss = classifier_fn(logits, labels)
             decoder_loss = decoder_fn(decoded, data)
-            loss = task_loss + decoder_loss
-            # backprop loss
+            loss = (decoder_loss * lambda_decoder) + (class_loss * lambda_classifier) # weighted loss terms
+            
+            # Backprop
             optimizer2.zero_grad()
             loss.backward()
             optimizer2.step()
-            # update epoch counters
-            total_loss += loss.item()
-            total_taskloss += task_loss.item()
-            total_reconloss += decoder_loss.item()
+            
+            # Update epoch counters
+            running_loss += loss.item() * data.size(0)
+            running_classloss += class_loss.item() * data.size(0)
+            running_decoderloss += decoder_loss.item() * data.size(0)
+            
+            # Get accuracy
+            _, preds = torch.max(logits, 1)
+            n_correct += (preds == labels).sum().item()
+            total_samples += labels.size(0)
         
-        total_loss /= len(train_loader) # get per-batch loss
-        total_taskloss /= len(train_loader)
-        total_reconloss /= len(train_loader)
+        # Get average batch loss
+        total_loss = running_loss / total_samples
+        total_classloss = running_classloss / total_samples
+        total_decoderloss = running_decoderloss / total_samples
+        accuracy = n_correct / total_samples * 100
         
-        print(f"\tEpoch {epoch+1}/{epochs}")
-        print(f"\t\ttotal loss: {total_loss}, task loss: {total_taskloss}, decoder loss: {total_reconloss},")
-        history2.append(round(float(total_loss), 4))
-    history['stage2'] = history2
+        print(f"\t\tTotal Loss: {total_loss:.4f} | Class Loss: {total_classloss:.4f} | Recon Loss: {total_decoderloss:.4f} | Accuracy: {accuracy:.2f}%")
+        history.append(total_loss)
     
     end_time = time.time()
     total_time = (end_time - start_time)/60
@@ -690,3 +1024,45 @@ def train_sae_center(model, train_data, epochs=10, lr=3e-4, center_weight=0.1, r
     print("Total train time: ", total_time, " mins")
 
     return model, history
+
+# Denormalization helper (ImageNet stats)
+def denormalize(tensor):
+    mean = torch.tensor([0.485, 0.456, 0.406]).to(tensor.device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).to(tensor.device).view(1, 3, 1, 1)
+    return tensor * std + mean
+
+# Visualization function
+def show_reconstruction(original, reconstructed, n=5):
+    """
+    Displays n pairs of (original, reconstructed) images.
+    
+    Args:
+        original (Tensor): Batch of normalized input images [B, 3, H, W]
+        reconstructed (Tensor): Batch of reconstructed images [B, 3, H, W]
+        n (int): Number of images to show
+    """
+    original = denormalize(original.detach().cpu())
+    reconstructed = denormalize(reconstructed.detach().cpu())
+    
+    original = torch.clamp(original, 0, 1)
+    reconstructed = torch.clamp(reconstructed, 0, 1)
+
+    plt.figure(figsize=(n * 3, 6))
+
+    for i in range(n):
+        # Original
+        ax = plt.subplot(2, n, i + 1)
+        img = original[i].permute(1, 2, 0).numpy()
+        ax.imshow(img)
+        ax.set_title("Original")
+        ax.axis("off")
+
+        # Reconstructed
+        ax = plt.subplot(2, n, n + i + 1)
+        img = reconstructed[i].permute(1, 2, 0).numpy()
+        ax.imshow(img)
+        ax.set_title("Reconstructed")
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.show()
