@@ -8,7 +8,6 @@ from sklearn.neighbors import NearestNeighbors, KNeighborsRegressor, BallTree, K
 from sklearn.model_selection import train_test_split, GridSearchCV, ParameterGrid
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.ensemble import RandomForestRegressor
-from temperature_scaling import *
 from tqdm import tqdm
 from PIL import Image
 from pathlib import Path
@@ -30,53 +29,12 @@ import detectors
 import timm
 import pickle
 
-class CustomTensorDataset():
-    """
-    TensorDataset with application of transforms.
-    """
-    def __init__(self, data, targets, transform=None):
-        self.data = data
-        self.targets = targets
-        self.transform = transform
-
-    def __getitem__(self, index):
-        # Handle batch indexing
-        if isinstance(index, (list, np.ndarray, torch.Tensor)):
-            index = np.array(index)
-            x = self.data[index]
-            y = self.targets[index]
-            # Apply transformations batch-wise
-            if self.transform:
-                x = torch.stack([self.transform(sample) for sample in x])
-            return x, y
-
-        # Handle single indexing
-        x = self.data[index]
-        y = self.targets[index]
-        # Ensure image has a channel dimension
-        if len(x.shape) == 2:
-            x = x.unsqueeze(0)  # Reshape to (1, H, W)
-        # set seeds
-        random.seed(33)
-        torch.manual_seed(33)
-        if self.transform:
-            x = self.transform(x)
-        return x, y
-
-    def __len__(self):
-        if isinstance(self.data, np.ndarray):
-            return self.data.shape[0]  # Use .shape for NumPy arrays
-        elif isinstance(self.data, torch.Tensor):
-            return self.data.size(0)  # Use .size(0) for PyTorch tensors
-        else:
-            raise TypeError("Unsupported data type for 'data'. Must be np.ndarray or torch.Tensor.")
-
 class HamDataset(Dataset):
     '''
     adapted from: https://stackoverflow.com/questions/77528929/pytorch-imagefolder-vs-custom-dataset-from-single-folder
     '''
     def __init__(self, targ_dir, meta_file, transform=None):
-        self.paths = list(Path(targ_dir).glob("*.jpg"))
+        self.paths = sorted(list(Path(targ_dir).glob("*.jpg")))
         self.meta = pd.read_csv(meta_file)
         self.labels = list(map(self.get_label, self.paths))
         self.transform = transform
@@ -113,8 +71,8 @@ class DdiDataset(Dataset):
     def get_label(self, path):
         # make sure this function returns the label from the path
         match = re.search(r'images/(.+)', str(path)).group(1) # image ID
-        label = self.meta.loc[self.meta['DDI_file'] == match]['malignant'].astype(bool) # malignant T/F label 
-        label = int(label.iloc[0]) # pandas Series of len 1 to int
+        label = self.meta.loc[self.meta['DDI_file'] == match]['label'].item() 
+        #label = int(label.iloc[0]) # pandas Series of len 1 to int
         return label
 
     def __len__(self):
@@ -143,8 +101,8 @@ class HibaDataset(Dataset):
     def get_label(self, path):
         # make sure this function returns the label from the path
         match = re.search(r'ISIC_\d{7}', str(path)).group(0)
-        label = self.meta.loc[self.meta['isic_id'] == match]['malignant'] # malignant binary label
-        label = int(label.iloc[0]) # pandas Series of len 1 to int
+        label = self.meta.loc[self.meta['isic_id'] == match]['label'].item()
+        #label = int(label.iloc[0]) # pandas Series of len 1 to int
         return label
 
     def __len__(self):
@@ -173,8 +131,8 @@ class UfesDataset(Dataset):
     def get_label(self, path):
         # make sure this function returns the label from the path
         match = re.search(r'images/(.+)', str(path)).group(1) # image ID
-        label = self.meta.loc[self.meta['img_id'] == match]['malignant'] # malignant binary label 
-        label = int(label.iloc[0]) # pandas Series of len 1 to int
+        label = self.meta.loc[self.meta['img_id'] == match]['label'].item()
+        #label = int(label.iloc[0]) # pandas Series of len 1 to int
         return label
 
     def __len__(self):
@@ -185,6 +143,35 @@ class UfesDataset(Dataset):
         img = Image.open(path).convert('RGB')
         class_idx = self.labels[index]
         img_id = re.search(r'images/(.+)', str(path)).group(1) # matches 'img_id' column in metadata.csv
+
+        if self.transform:
+            return self.transform(img), class_idx, img_id
+        else:
+            return img, class_idx, img_id
+
+class OtherDataset(Dataset):
+    '''
+    '''
+    def __init__(self, targ_dir, meta_file, transform=None):
+        self.paths = glob.glob(f"{targ_dir}/*")
+        self.meta = pd.read_csv(meta_file)
+        self.labels = list(map(self.get_label, self.paths))
+        self.transform = transform
+    
+    def get_label(self, path):
+        # make sure this function returns the label from the path
+        match = re.search(r'images/(.+)', str(path)).group(1) # image ID
+        label = self.meta.loc[self.meta['img_id'] == match]['label'].item()
+        return label
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        path = self.paths[index]
+        img = Image.open(path).convert('RGB')
+        class_idx = self.labels[index]
+        img_id = re.search(r'images/(.+)', str(path)).group(1) # matches 'img_id' in metadata
 
         if self.transform:
             return self.transform(img), class_idx, img_id
@@ -233,7 +220,7 @@ class BalancedBatchSampler(Sampler):
         return self.num_batches
 
 class ResNetSAE(nn.Module):
-    def __init__(self, latent_dim=20, num_classes=2, channels=3):
+    def __init__(self, latent_dim=32, num_classes=2, channels=3):
         super(ResNetSAE, self).__init__()
         self.latent_dim = latent_dim
         self.type = 'ResNetSAE'
@@ -361,7 +348,7 @@ class ResNetSAE(nn.Module):
         return encoded, decoded, logits
 
 class InceptionSAE(nn.Module):
-    def __init__(self, latent_dim=20, num_classes=2, channels=3):
+    def __init__(self, latent_dim=32, num_classes=2, channels=3):
         super(InceptionSAE, self).__init__()
         self.latent_dim = latent_dim
         self.type = 'InceptionSAE'
@@ -488,7 +475,7 @@ class InceptionSAE(nn.Module):
         return encoded, decoded, logits
 
 class VitSAE(nn.Module):
-    def __init__(self, latent_dim=20, num_classes=2, channels=3):
+    def __init__(self, latent_dim=32, num_classes=2, channels=3):
         super(VitSAE, self).__init__()
         self.latent_dim = latent_dim
         self.type = 'VitSAE'
@@ -722,7 +709,7 @@ class CenterLoss(nn.Module):
                 # 1-alpha is momentum of previous center value
                 self.centers.data[label] = (1 - alpha) * self.centers.data[label] + alpha * embeddings[i]
 
-def train_sae_sequential(model, train_data, epochs=20, batch_size=64, sampler=None):
+def train_sae_sequential(model, train_data, epochs=100, batch_size=64, sampler=None):
     '''
     '''
     # set device
@@ -819,14 +806,6 @@ def train_sae_sequential(model, train_data, epochs=20, batch_size=64, sampler=No
     print('\n\tStage 2 – Encoder, Decoder and Classifier')   
     
     # init stage 2 optimizer
-    #optimizer2 = optim.AdamW(
-        #[
-            #{'params': model.encoder.parameters(), 'lr': 1e-4},
-            #{'params': model.classifier.parameters(), 'lr': 5e-5},  # Lower learning rate for classifier
-            #{'params': model.decoder.parameters(), 'lr': 1e-4},
-        #],
-        #weight_decay=1e-5
-    #)
     optimizer2 = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
     
     for epoch in range(epochs):
@@ -883,6 +862,8 @@ def train_sae_sequential(model, train_data, epochs=20, batch_size=64, sampler=No
 
 def train_sae(model, train_data, val_data, epochs=50, lr=3e-4, recon_weight=0.5, task_weight=0.1):
     '''
+    Basic one-stage training loop for supervised autoencoder. Combines weighted loss terms of 
+    decoder (MSELoss) and classifier (CrossEntropyLoss) for backprop.
     '''
     # init variables
     task_fn = nn.CrossEntropyLoss()
@@ -891,9 +872,8 @@ def train_sae(model, train_data, val_data, epochs=50, lr=3e-4, recon_weight=0.5,
     val_loader = DataLoader(val_data, batch_size=64, shuffle=True)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     start_time = time.time()
+    
     # begin training
-    #print(f'Training {model.latent_dim}D model')
-    #print('\tTraining Encoder, Decoder and Classifier')
     history = []
     previous_valid = 1e4
     patience = 0
@@ -962,6 +942,8 @@ def train_sae(model, train_data, val_data, epochs=50, lr=3e-4, recon_weight=0.5,
 
 def train_sae_center(model, train_data, epochs=10, lr=3e-4, center_weight=0.1, recon_weight=100):
     '''
+    Basic one-stage training loop for supervised autoencoder. Combines weighted loss terms of 
+    encoder (CenterLoss), decoder (MSELoss) and classifier (CrossEntropyLoss) for backprop.
     '''
     # init variables
     center_fn = CenterLoss(model.latent_dim, num_classes=model.num_classes, metric='L1')

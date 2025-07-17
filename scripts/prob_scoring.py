@@ -3,7 +3,8 @@ from model_setup import *
 def get_embedding(model, data_dict, dim, softmax=False):
     # init loss functions
     rloss_fxn = nn.MSELoss(reduction='none')
-    sm = nn.Softmax(dim=1) # row-wise softmax
+    if softmax == True:
+        sm = nn.Softmax(dim=1) # row-wise softmax
     # set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # eval model for each dataset

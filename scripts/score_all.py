@@ -13,12 +13,17 @@ def main():
         help="Type of encoder to use for SAGE model (one of ['ResNet', 'Inception', 'ViT'])."
     )
     parser.add_argument(
-        "--dims",
-        help="Number of encoder output dimensions for desired model."
+        "--dim",
+        default=32,
+        help="Dimensions of latent space (encoder output). Default is 32."
     )
     parser.add_argument(
         "--modelpth",
         help="Path to trained HAM10000 SAGE model."
+    )
+    parser.add_argument(
+        "--datadir",
+        help="Path to dataset directory with subdirectories for HAM10000, HIBA, UFES and DDI images."
     )
     parser.add_argument(
         "--outdir",
@@ -27,7 +32,14 @@ def main():
     args = parser.parse_args()
 
     assert args.encoder in ['ResNet', 'Inception', 'ViT']
-    assert int(args.dims) in [2, 16, 32, 64]
+    assert os.path.isfile(args.modelpath) # check model exists
+    assert os.path.isdir(args.datadir) # check data directory exists
+    assert os.path.isdir(args.outdir) # check outdir exists
+
+    if type(args.dim) != int:
+        dim == int(args.dim)
+    else:
+        dim = args.dim
 
     if args.encoder == 'ViT':
         # ViT needs input size of 224x224
@@ -45,9 +57,9 @@ def main():
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # use ImageNet values
         ])
     
-    # Split dataset into train and test (90% train, 10% test)
-    ham_img_path = '/home/groups/ThompsonLab/schreyer/sage/data/ham/images'
-    ham_meta_path = '/home/groups/ThompsonLab/schreyer/sage/data/ham/metadata.csv'
+    # Split dataset into train (90%) and test
+    ham_img_path = os.path.join(args.datadir, '/ham/images')
+    ham_meta_path = os.path.join(args.datadir, '/ham/metadata.csv')
     ham_dataset = HamDataset(ham_img_path, ham_meta_path, transform=transform)
     train_indices, test_indices = train_test_split(
         np.arange(len(ham_dataset)),
@@ -55,22 +67,21 @@ def main():
         stratify=ham_dataset.labels,
         random_state=33 # makes split reproducible
     )
-    
     # Create subsets for train and test
     train_dataset = Subset(ham_dataset, train_indices)
     test_dataset = Subset(ham_dataset, test_indices)
     
-    # Split dataset into train and test (90% train, 10% test)
-    ddi_img_path = '/home/groups/ThompsonLab/schreyer/sage/data/ddi/images'
-    ddi_meta_path = '/home/groups/ThompsonLab/schreyer/sage/data/ddi/metadata.csv'
+    # Create other datasets
+    ddi_img_path = os.path.join(args.datadir, '/ddi/images')
+    ddi_meta_path = os.path.join(args.datadir, '/ddi/metadata.csv')
     ddi_dataset = DdiDataset(ddi_img_path, ddi_meta_path, transform=transform)
 
-    hiba_img_path = '/home/groups/ThompsonLab/schreyer/sage/data/hiba/images'
-    hiba_meta_path = '/home/groups/ThompsonLab/schreyer/sage/data/hiba/metadata.csv'
+    hiba_img_path = os.path.join(args.datadir, '/hiba/images')
+    hiba_meta_path = os.path.join(args.datadir, '/hiba/metadata.csv')
     hiba_dataset = HibaDataset(hiba_img_path, hiba_meta_path, transform=transform)
     
-    ufes_img_path = '/home/groups/ThompsonLab/schreyer/sage/data/ufes/images'
-    ufes_meta_path = '/home/groups/ThompsonLab/schreyer/sage/data/ufes/metadata.csv'
+    ufes_img_path = os.path.join(args.datadir, '/ufes/images')
+    ufes_meta_path = os.path.join(args.datadir, '/ufes/metadata.csv')
     ufes_dataset = UfesDataset(ufes_img_path, ufes_meta_path, transform=transform)
     
     # Make data dict
@@ -82,47 +93,47 @@ def main():
     data_dict['ufes'] = ufes_dataset
     
     ## Get SAGE output values
+    
     # load trained model
-    dims = int(args.dims)
-    n_classes = 7
+    n_classes = 7 # uses HAM10000 classes
 
     # Init model
     if args.encoder == 'ResNet':
-        model = ResNetSAE(latent_dim=dims, num_classes=n_classes, channels=3)
+        model = ResNetSAE(latent_dim=dim, num_classes=n_classes, channels=3)
     elif args.encoder == 'Inception':
-        model = InceptionSAE(latent_dim=dims, num_classes=n_classes, channels=3)
+        model = InceptionSAE(latent_dim=dim, num_classes=n_classes, channels=3)
     elif args.encoder == 'ViT':
-        model = VitSAE(latent_dim=dims, num_classes=n_classes, channels=3)
+        model = VitSAE(latent_dim=dim, num_classes=n_classes, channels=3)
     # Load model from save point
     model.load_state_dict(torch.load(args.modelpth))
     
     # run SAGE
-    latent_df = get_embedding(model, data_dict, dims, softmax=True)
+    latent_df = get_embedding(model, data_dict, dim, softmax=True)
     # get classifier confidence
     latent_df = get_max_conf(latent_df, n_classes)
     # get kNN distances to reference images
     latent_df = get_latent_distance(
         latent_df,
         data_dict.keys(),
-        dims,
+        dim,
         k=25,
         reference='train',
         metric='manhattan'
     )
     # pickle latent df
-    save_latent_path = os.path.join(args.outdir, f'all_{args.encoder}_{args.dims}D_latent.pkl')
+    save_latent_path = os.path.join(args.outdir, f'all_{args.encoder}_{dim}D_latent.pkl')
     with open(save_latent_path, 'wb') as file:
         pickle.dump(latent_df, file)
         
     # calculate probabilities and combined score
     probs_df = rank_measures_get_probs(
         latent_df,
-        [dims],
+        [dim],
         data_dict.keys(),
         reference='train'
     )
     # pickle probability df
-    save_prob_path = os.path.join(args.outdir, f'all_{args.encoder}_{args.dims}D_probs.pkl')
+    save_prob_path = os.path.join(args.outdir, f'all_{args.encoder}_{dim}D_probs.pkl')
     with open(save_prob_path, 'wb') as file:
         pickle.dump(probs_df, file)
 
