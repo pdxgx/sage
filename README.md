@@ -7,7 +7,7 @@
 Failure of machine learning models to generalize to new data is a core problem limiting their reliability, 
 partly due to the lack of simple and robust methods for comparing new data to the original training dataset. 
 We propose a standardized approach for assessing data similarity with a supervised autoencoder for generalization estimates (SAGE). 
-Here, we train a SAGE model on the popular HAM10000 dermoscopic imaging dataset and use it to probe similarity with skin lesions images from three other academic hospitals. 
+Here, we train a SAGE model on the popular HAM10000 dermoscopic imaging dataset and use it to probe similarity with skin lesion images from three other academic hospitals. 
 SAGE can be used to uncover problematic image artefacts and to improve performance of a separate malignancy predictor, as we show in our paper 
 <ins>_Ensemble out-of-distribution detection improves skin cancer malignancy prediction_</ins>.
 
@@ -35,7 +35,10 @@ First, create the environment using the provided YAML file.
 ```
 conda env create -f sage.yml
 ```
-Then, activate your environment with `conda activate sage`.
+Then, activate your environment.
+```
+conda activate sage
+```
 
 ## Training
 Replace the filepaths in the following script to train your own SAGE model on the HAM10000 dataset.
@@ -61,7 +64,7 @@ python3 score_all.py \
 --datadir /path/to/data_directory # dir with imaging datasets
 --outdir /path/to/scores/outdir \
 ```
-This will save `pickle` files of `pandas` dataframes for 1) SAGE model outputs and 2) the score values associated with each image.
+This will output `pickle` files of `pandas` dataframe objects for 1) SAGE model outputs and 2) the score values associated with each image.
 
 ### HAM vs. Your Data
 You can score a separate skin lesion imaging dataset of your choosing against HAM10000 so long as the directory structure is the same as described above. 
