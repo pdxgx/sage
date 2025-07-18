@@ -7,7 +7,8 @@
 Failure of machine learning models to generalize to new data is a core problem limiting their reliability, 
 partly due to the lack of simple and robust methods for comparing new data to the original training dataset. 
 We propose a standardized approach for assessing data similarity with a supervised autoencoder for generalization estimates (SAGE). 
-Here, we train a SAGE model on the popular HAM10000 dermoscopic imaging dataset and use it to probe similarity with skin lesion images from three other academic hospitals. 
+Here, we train a SAGE model on the popular HAM10000 dermoscopic imaging dataset and use it to probe similarity with skin lesion images from other datasets in Argentina,
+Brazil and the United States. 
 SAGE can be used to uncover problematic image artefacts and to improve performance of a separate malignancy predictor, as we show in our paper 
 <ins>_Ensemble out-of-distribution detection improves skin cancer malignancy prediction_</ins>.
 
@@ -22,7 +23,7 @@ Download these publicly-available imaging datasets:
 ### 2. Organization
 Structure your image folders as follows:
 ```
-data_directory/
+main_directory/
 ├── dataset_name/
 │   ├── images/
 │   └── metadata.csv
@@ -41,13 +42,13 @@ conda activate sage
 ```
 
 ## Training
-Replace the filepaths in the following script to train your own SAGE model on the HAM10000 dataset.
+Replace the filepaths in the following command to train your own SAGE model on the HAM10000 dataset.
 ```
 python3 train_ham.py \
---imagedir /path/to/data_directory/ham/images \
---metafile /path/to/data_directory/ham/metadata.csv \
+--imagedir /path/to/main_directory/ham/images \
+--metafile /path/to/main_directory/ham/metadata.csv \
 --savedir /path/to/model/savedir \
---encoder ResNet \ # default
+--encoder ResNet \
 --dim 32 # default
 ```
 We provide support for three options of pre-trained encoders: `ResNet`, `Inception` and `ViT`. Our trained ResNet50 model is also available for download as
@@ -55,26 +56,26 @@ a zip file from [this link](https://drive.google.com/drive/folders/1wcMIaFtooOJu
 
 ## Scoring
 ### HAM vs. HIBA, UFES and DDI
-If you've downloaded the datasets as shown above, replace the filepaths in the following script to calculate SAGE scores.
+If you've downloaded the datasets as shown above, replace the filepaths in the following command to calculate SAGE scores.
 ```
 python3 score_all.py \
---encoder ResNet \ # match the encoder type of your trained model
---dim 32 \ # match latent space size of your trained model
+--encoder ResNet \
+--dim 32 \
 --modelpth /path/to/trained/model \
---datadir /path/to/data_directory # dir with imaging datasets
---outdir /path/to/scores/outdir \
+--datadir /path/to/main_directory \
+--outdir /path/to/scores/outdir
 ```
 This will output `pickle` files of `pandas` dataframe objects for 1) SAGE model outputs and 2) the score values associated with each image.
 
 ### HAM vs. Your Data
 You can score a separate skin lesion imaging dataset of your choosing against HAM10000 so long as the directory structure is the same as described above. 
-Again, replace the filepaths and include your dataset's name after the `--compare-to` arg to use the following script.
+Again, replace the filepaths and include your dataset's name after the `--compare-to` arg to use the following command.
 ```
 python3 score_other.py
---encoder ResNet \ # match the encoder type of your trained model
---dim 32 \ # match latent space size of your trained model
+--encoder ResNet \
+--dim 32 \
 --modelpth /path/to/trained/model \
---datadir /path/to/data_directory # dir with imaging datasets
---compare-to dataset_name 
---outdir /path/to/scores/outdir \
+--datadir /path/to/main_directory \
+--compare-to dataset_name \
+--outdir /path/to/scores/outdir
 ```
