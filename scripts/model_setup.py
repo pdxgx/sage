@@ -153,7 +153,7 @@ class OtherDataset(Dataset):
     '''
     '''
     def __init__(self, targ_dir, meta_file, transform=None):
-        self.paths = glob.glob(f"{targ_dir}/*")
+        self.paths = list(Path(targ_dir).glob("*")) # gets all files in target dir
         self.meta = pd.read_csv(meta_file)
         self.labels = list(map(self.get_label, self.paths))
         self.transform = transform

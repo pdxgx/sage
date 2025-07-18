@@ -38,6 +38,8 @@ def main():
     args = parser.parse_args()
 
     assert args.encoder in ['ResNet', 'Inception', 'ViT']
+
+    dim = int(args.dim)
     
     # Transform used to train DeepDerm model (based on Inception V3) in DDI paper, missing cutout of upright rectangle
     paper_transform = transforms.Compose([
@@ -85,21 +87,21 @@ def main():
 
     # Init model
     if args.encoder == 'ResNet':
-        model = ResNetSAE(latent_dim=args.dim, num_classes=7, channels=3)
+        model = ResNetSAE(latent_dim=dim, num_classes=7, channels=3)
     elif args.encoder == 'Inception':
-        model = InceptionSAE(latent_dim=args.dim, num_classes=7, channels=3)
+        model = InceptionSAE(latent_dim=dim, num_classes=7, channels=3)
     elif args.encoder == 'ViT':
-        model = VitSAE(latent_dim=args.dim, num_classes=7, channels=3)
+        model = VitSAE(latent_dim=dim, num_classes=7, channels=3)
     
     # Run 2-step training process
     model, history = train_sae_sequential(model, train_dataset, epochs=100, batch_size=batch_size, sampler=balanced_sampler)
     
     # Save trained model as state dict
-    model_path = os.path.join(args.savedir, f'{model.type}_{args.dim}D')
+    model_path = os.path.join(args.savedir, f'{model.type}_{dim}D')
     torch.save(model.state_dict(), model_path)
     
     # Save history as pickled object
-    hist_path = os.path.join(args.savedir, f'{model.type}_{args.dim}D_history.pkl')
+    hist_path = os.path.join(args.savedir, f'{model.type}_{dim}D_history.pkl')
     with open(hist_path, 'wb') as file:
         pickle.dump(history, file)
 

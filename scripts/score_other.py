@@ -5,6 +5,7 @@ import torchvision
 from torchvision import transforms, datasets
 from sklearn.model_selection import train_test_split
 import sys
+import glob
 
 def main():
     parser = argparse.ArgumentParser()
@@ -36,15 +37,12 @@ def main():
     args = parser.parse_args()
 
     assert args.encoder in ['ResNet', 'Inception', 'ViT']
-    assert os.path.isfile(args.modelpath) # check model exists
+    assert os.path.isfile(args.modelpth) # check model exists
     assert os.path.isdir(args.datadir) # check data directory exists
-    assert os.path.isdir(os.path.join(args.datadir, args.compare-to)) # check subdir exists
+    assert os.path.isdir(os.path.join(args.datadir, args.compare_to)) # check subdir exists
     assert os.path.isdir(args.outdir) # check outdir exists
 
-    if type(args.dim) != int:
-        dim == int(args.dim)
-    else:
-        dim = args.dim
+    dim = int(args.dim)
 
     if args.encoder == 'ViT':
         # ViT needs input size of 224x224
@@ -63,8 +61,8 @@ def main():
         ])
     
     # Split dataset into train (90%) and test
-    ham_img_path = os.path.join(args.datadir, '/ham/images')
-    ham_meta_path = os.path.join(args.datadir, '/ham/metadata.csv')
+    ham_img_path = os.path.join(args.datadir, 'ham/images')
+    ham_meta_path = os.path.join(args.datadir, 'ham/metadata.csv')
     ham_dataset = HamDataset(ham_img_path, ham_meta_path, transform=transform)
     train_indices, test_indices = train_test_split(
         np.arange(len(ham_dataset)),
@@ -77,15 +75,15 @@ def main():
     test_dataset = Subset(ham_dataset, test_indices)
     
     # Create other dataset
-    other_img_path = os.path.join(args.datadir, args.compare-to)
-    other_meta_path = os.path.join(other_img_path, '/metadata.csv')
+    other_img_path = os.path.join(args.datadir, f'{args.compare_to}/images')
+    other_meta_path = os.path.join(args.datadir, f'{args.compare_to}/metadata.csv')
     other_dataset = OtherDataset(other_img_path, other_meta_path, transform=transform)
     
     # Make data dict
     data_dict = dict()
     data_dict['train'] = train_dataset
     data_dict['test'] = test_dataset
-    data_dict[f'{args.compare-to}'] = other_dataset
+    data_dict[f'{args.compare_to}'] = other_dataset
     
     ## Get SAGE output values
     
@@ -100,7 +98,8 @@ def main():
     elif args.encoder == 'ViT':
         model = VitSAE(latent_dim=dim, num_classes=n_classes, channels=3)
     # Load model from save point
-    model.load_state_dict(torch.load(args.modelpth))
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.load_state_dict(torch.load(args.modelpth, map_location=device))
     
     # run SAGE
     latent_df = get_embedding(model, data_dict, dim, softmax=True)
@@ -116,7 +115,7 @@ def main():
         metric='manhattan'
     )
     # pickle latent df
-    save_latent_path = os.path.join(args.outdir, f'{args.compare-to}_{args.encoder}_{dim}D_latent.pkl')
+    save_latent_path = os.path.join(args.outdir, f'{args.compare_to}_{args.encoder}_{dim}D_latent.pkl')
     with open(save_latent_path, 'wb') as file:
         pickle.dump(latent_df, file)
         
@@ -128,7 +127,7 @@ def main():
         reference='train'
     )
     # pickle probability df
-    save_prob_path = os.path.join(args.outdir, f'{args.compare-to}_{args.encoder}_{dim}D_probs.pkl')
+    save_prob_path = os.path.join(args.outdir, f'{args.compare_to}_{args.encoder}_{dim}D_probs.pkl')
     with open(save_prob_path, 'wb') as file:
         pickle.dump(probs_df, file)
 

@@ -32,14 +32,11 @@ def main():
     args = parser.parse_args()
 
     assert args.encoder in ['ResNet', 'Inception', 'ViT']
-    assert os.path.isfile(args.modelpath) # check model exists
+    assert os.path.isfile(args.modelpth) # check model exists
     assert os.path.isdir(args.datadir) # check data directory exists
     assert os.path.isdir(args.outdir) # check outdir exists
 
-    if type(args.dim) != int:
-        dim == int(args.dim)
-    else:
-        dim = args.dim
+    dim = int(args.dim)
 
     if args.encoder == 'ViT':
         # ViT needs input size of 224x224
@@ -58,8 +55,8 @@ def main():
         ])
     
     # Split dataset into train (90%) and test
-    ham_img_path = os.path.join(args.datadir, '/ham/images')
-    ham_meta_path = os.path.join(args.datadir, '/ham/metadata.csv')
+    ham_img_path = os.path.join(args.datadir, 'ham/images')
+    ham_meta_path = os.path.join(args.datadir, 'ham/metadata.csv')
     ham_dataset = HamDataset(ham_img_path, ham_meta_path, transform=transform)
     train_indices, test_indices = train_test_split(
         np.arange(len(ham_dataset)),
@@ -72,16 +69,16 @@ def main():
     test_dataset = Subset(ham_dataset, test_indices)
     
     # Create other datasets
-    ddi_img_path = os.path.join(args.datadir, '/ddi/images')
-    ddi_meta_path = os.path.join(args.datadir, '/ddi/metadata.csv')
+    ddi_img_path = os.path.join(args.datadir, 'ddi/images')
+    ddi_meta_path = os.path.join(args.datadir, 'ddi/metadata.csv')
     ddi_dataset = DdiDataset(ddi_img_path, ddi_meta_path, transform=transform)
 
-    hiba_img_path = os.path.join(args.datadir, '/hiba/images')
-    hiba_meta_path = os.path.join(args.datadir, '/hiba/metadata.csv')
+    hiba_img_path = os.path.join(args.datadir, 'hiba/images')
+    hiba_meta_path = os.path.join(args.datadir, 'hiba/metadata.csv')
     hiba_dataset = HibaDataset(hiba_img_path, hiba_meta_path, transform=transform)
     
-    ufes_img_path = os.path.join(args.datadir, '/ufes/images')
-    ufes_meta_path = os.path.join(args.datadir, '/ufes/metadata.csv')
+    ufes_img_path = os.path.join(args.datadir, 'ufes/images')
+    ufes_meta_path = os.path.join(args.datadir, 'ufes/metadata.csv')
     ufes_dataset = UfesDataset(ufes_img_path, ufes_meta_path, transform=transform)
     
     # Make data dict
@@ -105,7 +102,8 @@ def main():
     elif args.encoder == 'ViT':
         model = VitSAE(latent_dim=dim, num_classes=n_classes, channels=3)
     # Load model from save point
-    model.load_state_dict(torch.load(args.modelpth))
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.load_state_dict(torch.load(args.modelpth, map_location=device))
     
     # run SAGE
     latent_df = get_embedding(model, data_dict, dim, softmax=True)
