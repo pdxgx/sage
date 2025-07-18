@@ -51,7 +51,9 @@ python3 train_ham.py \
 --encoder ResNet \
 --dim 32 # default
 ```
-We provide support for three options of pre-trained encoders: `ResNet`, `Inception` and `ViT`. Our trained ResNet50 model is also available for download as
+We provide support for CUDA and three options of pre-trained encoders: `ResNet`, `Inception` and `ViT`. 
+Training SAGE with a ResNet encoder and a latent embedding size of 32 
+takes ~40 mins on two Nvidia A40 GPUs. Our trained ResNet50 model is also available for download as
 a zip file from [this link](https://drive.google.com/drive/folders/1wcMIaFtooOJuJ1h3Ct_VcfNC0yorGc33?usp=sharing).
 
 ## Scoring
@@ -68,10 +70,13 @@ python3 score_all.py \
 This will output `pickle` files of `pandas` dataframe objects for 1) SAGE model outputs and 2) the score values associated with each image.
 
 ### HAM vs. Your Data
-You can score a separate skin lesion imaging dataset of your choosing against HAM10000 so long as the directory structure is the same as described above. 
-Again, replace the filepaths and include your dataset's name after the `--compare-to` arg to use the following command.
+You can score a separate skin lesion imaging dataset of your choosing against HAM10000 so long as the directory structure follows the specified
+[Organization](#2-organization).
+Your dataset folder must contain a `metadata` CSV file with at minimum an `img_id` column for unique identifiers corresponding to image filenames and a `label` column.
+If diagnostic labels are unknown simply fill the `label` column with NA values or any integer.
+Use the following command with replaced filepaths and include your dataset's name after the `--compare-to` argument.
 ```
-python3 score_other.py
+python3 score_other.py \
 --encoder ResNet \
 --dim 32 \
 --modelpth /path/to/trained/model \
