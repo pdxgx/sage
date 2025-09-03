@@ -10,7 +10,7 @@ We propose a standardized approach for assessing data similarity with a supervis
 Here, we train a SAGE model on the popular HAM10000 dermoscopic imaging dataset and use it to probe similarity with skin lesion images from other datasets in Argentina,
 Brazil and the United States. 
 SAGE can be used to uncover problematic image artefacts and to improve performance of a separate malignancy predictor, as we show in our paper 
-<ins>_Ensemble out-of-distribution detection improves skin cancer malignancy prediction_</ins>.
+<ins>_Ensemble out-of-distribution detection improves skin cancer malignancy prediction_</ins>. View the manuscript preprint [here](https://www.medrxiv.org/content/10.1101/2025.08.20.25334101v2).
 
 ## Setup
 ### 1. Datasets
