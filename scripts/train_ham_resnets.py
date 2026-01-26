@@ -31,40 +31,30 @@ def main():
         help="Path to folder for saving stdout logs."
     )
     parser.add_argument(
-        "--encoder",
-        help="Type of encoder to use for SAGE model (one of ['ResNet', 'Inception', 'ViT'])."
-    )
-    parser.add_argument(
-        "--dim",
-        default=256,
-        help="Dimensions of latent space (encoder output). Default is 256."
-    )
-    parser.add_argument(
         "--balanced",
         action='store_true',
         help="Uses balanced batch sampling during model training."
     )
     args = parser.parse_args()
-
+    
     # set up output logging
     os.makedirs(args.logdir, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
         handlers=[
-            logging.FileHandler(f"{args.logdir}/train_ham.log"),
+            logging.FileHandler(f"{args.logdir}/train_ham_resnets.log"),
             logging.StreamHandler()  # still prints to console / docker logs
         ]
     )
     logger = logging.getLogger(__name__)
 
+    # check args
     assert os.path.isdir(args.imagedir) # check image directory exists
     assert os.path.isfile(args.metafile) # check metadata file exists
     assert os.path.isdir(args.savedir) # check save directory exists
     assert os.path.isdir(args.logdir) # check log directory exists
-    assert args.encoder in ['ResNet', 'Inception', 'ViT']
-
-    dim = int(args.dim)
+    assert args.balanced in [True, False]
     
     # Transform used to train DeepDerm model (based on Inception V3) in DDI paper, missing cutout of upright rectangle
     paper_transform = transforms.Compose([
@@ -76,22 +66,12 @@ def main():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    if args.encoder == 'ViT':
-        # ViT needs input size of 224x224
-        transform = transforms.Compose([
-            transforms.Resize(224),               
-            transforms.CenterCrop(224),            
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # use ImageNet values
-        ])
-        
-    else:
-        transform = transforms.Compose([
-            transforms.Resize(299),               
-            transforms.CenterCrop(299),            
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # use ImageNet values
-        ])
+    transform = transforms.Compose([
+        transforms.Resize(299),               
+        transforms.CenterCrop(299),            
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # use ImageNet values
+    ])
     
     # Split dataset into train (90%) and test (10%)
     ham_dataset = HamDataset(args.imagedir, args.metafile, transform=None)
@@ -108,15 +88,16 @@ def main():
             ham_dataset.lesions # separates by lesion ID
         )
     )
-    # Further split into train and validation
+    # Further split
     inner_splitter = StratifiedGroupKFold(
         n_splits=5, # 20% of 90% validation split
         shuffle=True,
         random_state=33 # makes split reproducible
     )
+    # placeholder arrays for second split
     holder_labels = np.array(ham_dataset.labels)[holder_indices]
     holder_lesions = np.array(ham_dataset.lesions)[holder_indices]
-    # gives first kfold split
+    # splits train into train/valid
     train_indices, val_indices = next(
         inner_splitter.split(
             np.zeros(len(holder_indices)), # stand-in for X
@@ -133,6 +114,7 @@ def main():
     assert len(set(train_indices).intersection(set(val_indices))) == 0 # check no overlap between train/val
     assert len(set(val_indices).intersection(set(test_indices))) == 0 # check no overlap between val/test
     
+    # Init individual datasets
     ham_train = HamDataset(args.imagedir, args.metafile, transform=transform)
     ham_val = HamDataset(args.imagedir, args.metafile, transform=transform)
     ham_test = HamDataset(args.imagedir, args.metafile, transform=transform)
@@ -145,8 +127,8 @@ def main():
     # Init training params
     batch_size = 64 # must be divisible by n classes for balanced sampler
     train_labels = [ham_dataset.labels[i] for i in train_indices] # returns labels for train images
-
-    if args.balanced:
+    
+    if args.balanced == True:
         sampler = BalancedBatchSampler(train_labels, batch_size=batch_size)
         weights = None
         path_suf = '_balanced'
@@ -155,33 +137,27 @@ def main():
         weights = get_train_weights(train_labels)
         path_suf = ''
 
-    # train 5 versions of SAGE
+    # train 5 ResNets
     for i in range(5):
-        # Init model
-        if args.encoder == 'ResNet':
-            model = ResNetSAE(latent_dim=dim, num_classes=8, channels=3)
-        elif args.encoder == 'Inception':
-            model = InceptionSAE(latent_dim=dim, num_classes=8, channels=3)
-        elif args.encoder == 'ViT':
-            model = VitSAE(latent_dim=dim, num_classes=8, channels=3)
+        model = ResNet(num_classes=8)
         
-        # Run 2-step training process
-        model, history = train_sae_sequential(
+        # Run training loop
+        model, history = train_resnet(
             model, 
             train_dataset, 
             val_dataset, 
             epochs=50,
             batch_size=batch_size,
             sampler=sampler,
-            weights=weights,
+            weights=weights
         )
         
         # Save trained model as state dict
-        model_path = os.path.join(args.savedir, f"{get_model_component(model, 'type')}_{dim}D_{i}{path_suf}.pth")
+        model_path = os.path.join(args.savedir, f"{get_model_component(model, 'type')}_{i}{path_suf}.pth")
         torch.save(get_state_dict(model), model_path)
         
         # Save history as pickled object
-        hist_path = os.path.join(args.savedir, f"{get_model_component(model, 'type')}_{dim}D_{i}{path_suf}_history.pkl")
+        hist_path = os.path.join(args.savedir, f"{get_model_component(model, 'type')}_{i}{path_suf}_history.pkl")
         with open(hist_path, 'wb') as file:
             pickle.dump(history, file)
 
