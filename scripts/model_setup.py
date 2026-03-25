@@ -519,17 +519,17 @@ class ResNet(nn.Module):
             probs_holder.append(probs.unsqueeze(0)) # add batch dimension
 
         probs_holder = torch.cat(probs_holder, dim=0) # Shape: (repeat, batch_size, classes)
-        mean_probs = probs_holder.mean(dim=0) # average logits over repeats
+        mean_probs = probs_holder.mean(dim=0) # average probs over repeats
         
         # use entropy as a measure of uncertainty
         entropy = -torch.sum(mean_probs * torch.log(mean_probs + 1e-8), dim=1)
         # normalize to [0, 1]
-        uncertainty = entropy / math.log(self.num_classes) # confidence is 1.0 - uncertainty
+        uncertainty = entropy / math.log(self.num_classes) # uncertainty is ordinal low to high
 
         return mean_probs, uncertainty
 
 class InceptionSAE(nn.Module):
-    def __init__(self, latent_dim=32, num_classes=2, channels=3):
+    def __init__(self, latent_dim=256, num_classes=8, channels=3):
         super(InceptionSAE, self).__init__()
         self.latent_dim = latent_dim
         self.type = 'InceptionSAE'
@@ -549,27 +549,11 @@ class InceptionSAE(nn.Module):
         self.decoder = nn.Sequential(
             # expand compressed embedding vector
             # First fc
-            nn.Linear(latent_dim, 75),
+            nn.Linear(latent_dim, 384),
             nn.LeakyReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             # Second fc
-            nn.Linear(75, 150),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Third fc
-            nn.Linear(150, 225),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Fourth fc
-            nn.Linear(225, 300),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Fifth fc
-            nn.Linear(300, 375),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Sixth fc
-            nn.Linear(375, 512),
+            nn.Linear(384, 512),
             nn.Unflatten(dim=1, unflattened_size=(32, 4, 4)),  # Output: [-1, 32, 4, 4]
             nn.LeakyReLU(),
             # First deconv: 4x4 -> 8x8
@@ -594,69 +578,32 @@ class InceptionSAE(nn.Module):
             nn.LeakyReLU(),
             # Sixth deconv: 128x128 -> 256x256
             nn.ConvTranspose2d(in_channels=32, out_channels=channels, kernel_size=4, padding=1, stride=2),
-            nn.BatchNorm2d(channels),
-            nn.LeakyReLU(),
+                ## no BatchNorm or activation
             # Upsample layer: 256x256 -> 299x299
-            nn.Upsample(size=(299, 299), mode='bilinear', align_corners=True),
+            nn.Upsample(size=(299, 299), mode='bilinear', align_corners=False),
             nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1, stride=1),  # Refinement convolution
         )
 
-        if latent_dim < num_classes:
-            # NN classifier with hourglass shape
-            self.classifier = nn.Sequential(
-                # First fc expands
-                nn.Linear(self.latent_dim, 8),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Second fc expands
-                nn.Linear(8, 16),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Third fc expands
-                nn.Linear(16, 24),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Fourth fc expands
-                nn.Linear(24, 32),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Fifth fc reduces
-                nn.Linear(32, 24),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Sixth fc reduces
-                nn.Linear(24, 16),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Seventh fc predicts
-                nn.Linear(16, num_classes)
-            )
-        else:
-            # NN classifier
-            self.classifier = nn.Sequential(
-                nn.Linear(self.latent_dim, 32),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(32, 26),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(26, 20),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(20, 14),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(14, num_classes)
-            )
+        # NN classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(self.latent_dim, 128),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.LeakyReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, num_classes)
+        )
     
     def forward(self, x):
-        encoded, _ = self.encoder(x)
+        encoded = self.encoder(x)
+        encoded = F.normalize(encoded, dim=1)
         decoded = self.decoder(encoded)
         logits = self.classifier(encoded)
         return encoded, decoded, logits
 
 class VitSAE(nn.Module):
-    def __init__(self, latent_dim=32, num_classes=2, channels=3):
+    def __init__(self, latent_dim=256, num_classes=8, channels=3):
         super(VitSAE, self).__init__()
         self.latent_dim = latent_dim
         self.type = 'VitSAE'
@@ -676,27 +623,11 @@ class VitSAE(nn.Module):
         self.decoder = nn.Sequential(
             # expand compressed embedding vector
             # First fc
-            nn.Linear(latent_dim, 75),
+            nn.Linear(latent_dim, 384),
             nn.LeakyReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             # Second fc
-            nn.Linear(75, 150),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Third fc
-            nn.Linear(150, 225),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Fourth fc
-            nn.Linear(225, 300),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Fifth fc
-            nn.Linear(300, 375),
-            nn.LeakyReLU(),
-            nn.Dropout(0.2),
-            # Sixth fc
-            nn.Linear(375, 512),
+            nn.Linear(384, 512),
             nn.Unflatten(dim=1, unflattened_size=(32, 4, 4)),  # Output: [-1, 32, 4, 4]
             nn.LeakyReLU(),
             # First deconv: 4x4 -> 8x8
@@ -720,64 +651,27 @@ class VitSAE(nn.Module):
             nn.BatchNorm2d(32),
             nn.LeakyReLU(),
             # Sixth deconv: 128x128 -> 256x256
-            nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, padding=1, stride=2),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(),
-            # Resizing layer: 256x256 -> 224x224
-            nn.Conv2d(in_channels=32, out_channels=channels, kernel_size=3, padding=1), # drops channels from 32 -> 3
-            nn.AdaptiveAvgPool2d((224, 224))
+            nn.ConvTranspose2d(in_channels=32, out_channels=channels, kernel_size=4, padding=1, stride=2),
+                ## no BatchNorm or activation
+            # Downsample layer: 256x256 -> 224x224 with interpolation
+            F.interpolate(size=(224, 224), mode='bilinear', align_corners=False),
+            nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1, stride=1),  # Refinement convolution
         )
 
-        if latent_dim < num_classes:
-            # NN classifier with hourglass shape
-            self.classifier = nn.Sequential(
-                # First fc expands
-                nn.Linear(self.latent_dim, 8),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Second fc expands
-                nn.Linear(8, 16),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Third fc expands
-                nn.Linear(16, 24),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Fourth fc expands
-                nn.Linear(24, 32),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Fifth fc reduces
-                nn.Linear(32, 24),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Sixth fc reduces
-                nn.Linear(24, 16),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                # Seventh fc predicts
-                nn.Linear(16, num_classes)
-            )
-        else:
-            # NN classifier
-            self.classifier = nn.Sequential(
-                nn.Linear(self.latent_dim, 32),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(32, 26),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(26, 20),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(20, 14),
-                nn.LeakyReLU(),
-                nn.Dropout(0.2),
-                nn.Linear(14, num_classes)
-            )
+        # NN classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(self.latent_dim, 128),
+            nn.LeakyReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.LeakyReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, num_classes)
+        )
     
     def forward(self, x):
         encoded = self.encoder(x)
+        encoded = F.normalize(encoded, dim=1)
         decoded = self.decoder(encoded)
         logits = self.classifier(encoded)
         return encoded, decoded, logits
@@ -785,7 +679,7 @@ class VitSAE(nn.Module):
 
 class FcSAE(nn.Module):
     """
-    Creates an autoencoder with a regressor component.
+    Creates a simple fully-connected supervised autoencoder.
     """
 
     def __init__(self, latent_dim=2, in_features=None, num_classes=4):
