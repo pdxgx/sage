@@ -1,16 +1,19 @@
 # Supervised Autoencoder for Generalization Estimates (SAGE)
+
 <p align="center">
-	<img align="center" width="585" height="300" alt="fig1(7)" src="https://github.com/user-attachments/assets/931741b9-7fd0-4b44-b659-14e8c38583fe" />
+<img width="585" height="300" alt="fig2" src="https://github.com/user-attachments/assets/3706c5db-6bbd-43dd-bd98-8b4f44beb338" />
 </p>
 
 ## Description
 Failure of machine learning models to generalize to new data is a core problem limiting their reliability, 
-partly due to the lack of simple and robust methods for comparing new data to the original training dataset. 
-We propose a standardized approach for assessing data similarity with a supervised autoencoder for generalization estimates (SAGE). 
+partly due to the lack of simple and robust methods for comparing new data to a model's original training dataset. 
+We propose a standardized approach for assessing similarity between datasets with a supervised autoencoder for generalization estimates (SAGE).
+
 Here, we train a SAGE model on the popular HAM10000 dermoscopic imaging dataset and use it to probe similarity with skin lesion images from other datasets in Argentina,
 Brazil and the United States. 
-SAGE can be used to uncover problematic image artefacts and to improve performance of a separate malignancy predictor, as we show in our paper 
-<ins>_Ensemble out-of-distribution detection improves skin cancer malignancy prediction_</ins>. View the manuscript preprint [here](https://www.medrxiv.org/content/10.1101/2025.08.20.25334101v2).
+SAGE can be used to uncover problematic image artifacts and gate a downstream classifier by preventing evaluation of samples undergoing distribution shift. 
+
+Our preprint can be accessed [here](https://www.medrxiv.org/content/10.1101/2025.08.20.25334101v2) and the paper, **Multi-criterion uncertainty estimation improves skin cancer distribution shift detection and malignancy prediction**, will be published in _npj Digital Medicine_.
 
 ## Setup
 ### 1. Datasets
@@ -30,15 +33,10 @@ main_directory/
 ```
 Each dataset must have its own folder with an `images` subdirectory and an associated `metadata` CSV file.
 
-### 3. Build the Environment
-The python environment used to run this code is built with `conda` and uses `pip` for package installs.
-First, create the environment using the provided YAML file.
+### 3. Download Dependencies
+We recommend building a virtual environment with `venv` or `conda`. You can install requirements within your environment using `pip` as follows.
 ```
-conda env create -f sage.yml
-```
-Then, activate your environment.
-```
-conda activate sage
+pip install -r requirements.txt
 ```
 
 ## Training
@@ -49,20 +47,18 @@ python3 train_ham.py \
 --metafile /path/to/main_directory/ham/metadata.csv \
 --savedir /path/to/model/savedir \
 --encoder ResNet \
---dim 32 # default
+--dim 256 # default
 ```
 We provide support for CUDA and three options of pre-trained encoders: `ResNet`, `Inception` and `ViT`. 
-Training SAGE with a ResNet encoder and a latent embedding size of 32 
-takes ~40 mins on two Nvidia A40 GPUs. Our trained ResNet50 model is also available for download as
-a zip file from [this link](https://drive.google.com/drive/folders/1wcMIaFtooOJuJ1h3Ct_VcfNC0yorGc33?usp=sharing).
+Default settings will train SAGE with a latent embedding size of 256. Pre-trained model weights are available upon request.
 
 ## Scoring
 ### HAM vs. HIBA, UFES and DDI
 If you've downloaded the datasets as shown above, replace the filepaths in the following command to calculate SAGE scores.
 ```
-python3 score_all.py \
+python3 sage_score_all.py \
 --encoder ResNet \
---dim 32 \
+--dim 256 \
 --modelpth /path/to/trained/model \
 --datadir /path/to/main_directory \
 --outdir /path/to/scores/outdir
@@ -71,16 +67,17 @@ This will output `pickle` files of `pandas` dataframe objects for 1) SAGE model 
 
 ### HAM vs. Your Data
 You can score a separate skin lesion imaging dataset of your choosing against HAM10000 so long as the directory structure follows the specified
-[Organization](#2-organization).
+[organization](#2-organization).
 Your dataset folder must contain a `metadata` CSV file with at minimum an `img_id` column for unique identifiers corresponding to image filenames and a `label` column.
 If diagnostic labels are unknown simply fill the `label` column with NA values or any integer.
 Use the following command with replaced filepaths and include your dataset's name after the `--compare-to` argument.
 ```
-python3 score_other.py \
+python3 sage_score_other.py \
 --encoder ResNet \
---dim 32 \
+--dim 256 \
 --modelpth /path/to/trained/model \
 --datadir /path/to/main_directory \
 --compare-to dataset_name \
 --outdir /path/to/scores/outdir
-```
+```<img width="2925" height="1575" alt="fig2" src="https://github.com/user-attachments/assets/2754e315-8fc5-41c1-9e8b-9eb0e3741cab" />
+
